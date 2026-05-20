@@ -353,6 +353,92 @@
     font-size: 14px;
   }
 
+  .template-card {
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+
+  .template-card h3 {
+    margin: 0 0 10px;
+    font-size: 14px;
+    color: var(--text);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .template-card h3 .total {
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  .template-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px 12px;
+  }
+
+  @media (min-width: 600px) {
+    .template-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+
+  .template-grid label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .template-grid input {
+    width: 48px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 13px;
+    text-align: center;
+    margin-left: auto;
+  }
+
+  .template-grid input:focus {
+    outline: none;
+    border-color: var(--primary);
+  }
+
+  .sticker-card.placeholder {
+    border-style: dashed;
+    background: #fafbfc;
+  }
+
+  .sticker-card .thumb.empty {
+    background: #f3f4f6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #9ca3af;
+    font-size: 32px;
+    cursor: default;
+  }
+
+  .sticker-card .thumb.empty:hover { transform: none; }
+
+  .sticker-card .missing-badge {
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 11px;
+    color: #6b7280;
+    background: #f3f4f6;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-weight: 500;
+    vertical-align: middle;
+  }
+
   .lightbox {
     position: fixed;
     inset: 0;
@@ -462,6 +548,19 @@
 
   <div class="main-grid">
     <div class="left-col">
+      <div class="template-card">
+        <h3>예상 수량 <span class="total">총 <span id="templateTotal">10</span>개</span></h3>
+        <div class="template-grid">
+          <label>Stem <input type="number" min="0" max="20" value="1" data-cat="0" /></label>
+          <label>Tray <input type="number" min="0" max="20" value="1" data-cat="1" /></label>
+          <label>Liner <input type="number" min="0" max="20" value="1" data-cat="2" /></label>
+          <label>Glenosphere <input type="number" min="0" max="20" value="1" data-cat="3" /></label>
+          <label>Baseplate <input type="number" min="0" max="20" value="1" data-cat="4" /></label>
+          <label>Central Screw <input type="number" min="0" max="20" value="1" data-cat="5" /></label>
+          <label>Locking Screw <input type="number" min="0" max="20" value="4" data-cat="6" /></label>
+        </div>
+      </div>
+
       <div class="dropzone" id="dropzone">
         <p><strong>이미지를 드래그하거나 클릭하여 업로드</strong></p>
         <p class="hint">또는 <kbd>Ctrl</kbd> + <kbd>V</kbd> 로 클립보드 이미지 붙여넣기</p>
@@ -638,7 +737,7 @@
 
       await worker.terminate();
 
-      const stickers = extractStickers([r1.data, r2.data]);
+      const stickers = applyTemplate(extractStickers([r1.data, r2.data]), getTemplate());
       renderResults(stickers);
       rawText.textContent = '[PSM 11]\n' + r1.data.text + '\n\n[PSM 6]\n' + r2.data.text;
       rawTextToggle.style.display = 'block';
@@ -709,8 +808,6 @@
   // (either via a "LOT" prefix word or via the distinctive Coralis token
   // pattern by itself), and date candidates. For each LOT, pick the
   // spatially nearest date(s) and choose the future-most as the expiration.
-  const MAX_STICKERS = 10;
-
   function categorize(productName) {
     if (!productName) return -1;
     const n = productName.toLowerCase();
@@ -1003,7 +1100,57 @@
     // Sort: recognized stickers by category order, unrecognized last.
     stickers.sort((a, b) => a.sortKey - b.sortKey);
 
-    return stickers.slice(0, MAX_STICKERS);
+    return stickers;
+  }
+
+  // ---- Template (expected quantity per category) ----
+  function getTemplate() {
+    const t = {};
+    document.querySelectorAll('[data-cat]').forEach(inp => {
+      const k = parseInt(inp.dataset.cat, 10);
+      const v = parseInt(inp.value, 10);
+      t[k] = Number.isFinite(v) && v >= 0 ? v : 0;
+    });
+    return t;
+  }
+
+  function updateTemplateTotal() {
+    const t = getTemplate();
+    const total = Object.values(t).reduce((a, b) => a + b, 0);
+    const el = document.getElementById('templateTotal');
+    if (el) el.textContent = total;
+  }
+
+  // Group detected stickers by category, then insert empty placeholder
+  // cards for any shortfall vs the template. Extras over the template
+  // are kept as-is (so legitimate extras still surface).
+  function applyTemplate(stickers, template) {
+    const byCat = {};
+    const unknowns = [];
+    stickers.forEach(s => {
+      if (s.categoryIdx >= 0) (byCat[s.categoryIdx] = byCat[s.categoryIdx] || []).push(s);
+      else unknowns.push(s);
+    });
+    const out = [];
+    for (let cat = 0; cat < CATEGORY_LABEL.length; cat++) {
+      const got = byCat[cat] || [];
+      out.push(...got);
+      const need = (template[cat] || 0) - got.length;
+      for (let i = 0; i < need; i++) {
+        out.push({
+          lot: '',
+          expiration: '',
+          cropBox: null,
+          productName: CATEGORY_LABEL[cat],
+          categoryIdx: cat,
+          recognized: true,
+          sortKey: cat,
+          isPlaceholder: true
+        });
+      }
+    }
+    out.push(...unknowns);
+    return out;
   }
 
   // Build a crop region around the LOT (and expiration if available),
@@ -1143,20 +1290,26 @@
       </div>`;
 
     const cards = stickers.map((s, i) => {
-      const thumb = makeCropThumbnail(s.cropBox);
+      const thumb = s.isPlaceholder ? null : makeCropThumbnail(s.cropBox);
       const thumbHtml = thumb
         ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
-        : `<div class="thumb"></div>`;
+        : (s.isPlaceholder
+            ? `<div class="thumb empty">?</div>`
+            : `<div class="thumb"></div>`);
       const productHtml = s.productName
         ? `<span class="product-name">${escapeHtml(s.productName)}</span>`
         : '';
       const warnHtml = !s.recognized
         ? `<span class="warn-badge" title="제품 분류 미확인 — 직접 확인해 주세요">⚠ 체크 필요</span>`
         : '';
+      const missingHtml = s.isPlaceholder
+        ? `<span class="missing-badge" title="감지되지 않음 — 직접 입력해 주세요">미감지</span>`
+        : '';
+      const cardCls = s.isPlaceholder ? 'sticker-card placeholder' : 'sticker-card';
       return `
-        <div class="sticker-card" data-idx="${i}">
+        <div class="${cardCls}" data-idx="${i}">
           ${thumbHtml}
-          <h3>스티커 #${i + 1}${productHtml}${warnHtml}</h3>
+          <h3>스티커 #${i + 1}${productHtml}${warnHtml}${missingHtml}</h3>
           <div class="fields">
             <div class="field-row">
               <span class="field-label">LOT</span>
@@ -1343,6 +1496,11 @@
       toast.classList.remove('show');
     }, 1800);
   }
+
+  document.querySelectorAll('[data-cat]').forEach(inp => {
+    inp.addEventListener('input', updateTemplateTotal);
+  });
+  updateTemplateTotal();
 
   toggleRawBtn.addEventListener('click', () => {
     rawText.classList.toggle('visible');
