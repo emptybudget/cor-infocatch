@@ -759,6 +759,42 @@
     };
   }
 
+  // Pull the product name text for one LOT: lines between the category
+  // keyword (anchor above the LOT) and the first Material/REF/LOT marker.
+  // Restricted to the LOT's horizontal column to avoid pulling text from
+  // adjacent stickers when OCR merged rows.
+  function extractNameForLot(lot, kwAnchor, lines) {
+    if (!kwAnchor) return '';
+    const yTop = kwAnchor.bbox.y0;
+    const yBot = lot.bbox.y0;
+    if (yBot <= yTop) return '';
+
+    const lotCx = (lot.bbox.x0 + lot.bbox.x1) / 2;
+    const lotH = Math.max(1, lot.bbox.y1 - lot.bbox.y0);
+    const xTolerance = lotH * 18;
+
+    const candidates = lines.filter(l => {
+      const cy = (l.bbox.y0 + l.bbox.y1) / 2;
+      if (cy < yTop || cy >= yBot) return false;
+      const cx = (l.bbox.x0 + l.bbox.x1) / 2;
+      if (Math.abs(cx - lotCx) > xTolerance) return false;
+      const t = (l.text || '').trim();
+      if (!t) return false;
+      return true;
+    });
+    candidates.sort((a, b) => a.bbox.y0 - b.bbox.y0);
+
+    // Stop at the first Material/REF/LOT marker line.
+    const stopRe = /^\s*(material|ref\b|lot\b)/i;
+    const nameLines = [];
+    for (const l of candidates) {
+      const t = l.text.trim();
+      if (stopRe.test(t)) break;
+      nameLines.push(t);
+    }
+    return nameLines.join(' ').replace(/\s+/g, ' ').trim();
+  }
+
   function extractStickers(dataArr) {
     const datas = Array.isArray(dataArr) ? dataArr : [dataArr];
     const words = [];
@@ -879,17 +915,6 @@
       });
     });
 
-    // ---- Find loose dimension hits (fallback for spec field) ----
-    const dimHits = []; // { value, bbox }
-    const dimRe = /\b(\d{1,3}(?:\.\d{1,2})?)\s*mm\b/gi;
-    lines.forEach(line => {
-      const matches = [...(line.text || '').matchAll(dimRe)];
-      matches.forEach(m => {
-        const tight = bboxForMatchInLine(line, m.index, m[0].length);
-        dimHits.push({ value: `${m[1]}mm`, bbox: tight });
-      });
-    });
-
     // ---- Pair each LOT with its expiration ----
     const stickers = uniqueLots.map(lot => {
       const lotCenter = bboxCenter(lot.bbox);
@@ -922,10 +947,12 @@
 
       const kwPick = nearest(productHits);
       const categoryIdx = kwPick ? kwPick.categoryIdx : -1;
-      const productName = categoryIdx >= 0 ? CATEGORY_LABEL[categoryIdx] : '';
 
-      const dimPick = nearest(dimHits);
-      const spec = dimPick ? dimPick.value : '';
+      // Name = lines between the category keyword and the LOT, excluding
+      // the Material/REF/LOT marker lines themselves. Falls back to the
+      // category label if no anchor line is found.
+      const nameFromLines = extractNameForLot(lot, kwPick, lines);
+      const productName = nameFromLines || (categoryIdx >= 0 ? CATEGORY_LABEL[categoryIdx] : '');
 
       const recognized = categoryIdx >= 0;
 
@@ -934,7 +961,6 @@
         expiration: expiration ? expiration.yyyymmdd : '',
         cropBox,
         productName,
-        spec,
         categoryIdx,
         recognized,
         sortKey: recognized ? categoryIdx : Number.POSITIVE_INFINITY
@@ -1066,13 +1092,8 @@
       const thumbHtml = thumb
         ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
         : `<div class="thumb"></div>`;
-      // Show "<product> <spec>" — but skip spec if it already appears in the name
-      let productText = s.productName || '';
-      if (s.spec && !productText.toLowerCase().includes(s.spec.toLowerCase())) {
-        productText = (productText + ' ' + s.spec).trim();
-      }
-      const productHtml = productText
-        ? `<span class="product-name">${escapeHtml(productText)}</span>`
+      const productHtml = s.productName
+        ? `<span class="product-name">${escapeHtml(s.productName)}</span>`
         : '';
       const warnHtml = !s.recognized
         ? `<span class="warn-badge" title="제품 분류 미확인 — 직접 확인해 주세요">⚠ 체크 필요</span>`
