@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Coralis 라벨 OCR 추출기</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --border: #e3e8ef;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --success: #10b981;
+    --danger: #ef4444;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px 16px 80px;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 24px;
+  }
+
+  header h1 {
+    font-size: 22px;
+    margin: 0 0 6px;
+    color: var(--text);
+  }
+
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .dropzone {
+    border: 2px dashed #cbd5e1;
+    border-radius: 12px;
+    background: var(--card);
+    padding: 32px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+
+  .dropzone.dragover {
+    border-color: var(--primary);
+    background: #eff6ff;
+  }
+
+  .dropzone p {
+    margin: 0 0 8px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .dropzone .hint {
+    font-size: 12px;
+    color: #9ca3af;
+  }
+
+  .dropzone input[type=file] {
+    display: none;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background .15s;
+  }
+
+  .btn:hover:not(:disabled) { background: var(--primary-hover); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .btn-sm {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
+  .btn-outline {
+    background: transparent;
+    color: var(--primary);
+    border: 1px solid var(--primary);
+  }
+
+  .btn-outline:hover:not(:disabled) {
+    background: #eff6ff;
+  }
+
+  .preview-section {
+    margin-top: 20px;
+    display: none;
+  }
+
+  .preview-section.visible { display: block; }
+
+  .preview-card {
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+
+  .preview-card img {
+    max-width: 100%;
+    max-height: 400px;
+    display: block;
+    margin: 0 auto;
+    border-radius: 8px;
+  }
+
+  .actions-row {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+
+  .loading {
+    display: none;
+    text-align: center;
+    padding: 32px 16px;
+  }
+
+  .loading.visible { display: block; }
+
+  .spinner {
+    display: inline-block;
+    width: 36px;
+    height: 36px;
+    border: 3px solid #e5e7eb;
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    margin-bottom: 12px;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .loading p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .progress-bar {
+    height: 4px;
+    background: #e5e7eb;
+    border-radius: 2px;
+    max-width: 320px;
+    margin: 12px auto 0;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--primary);
+    width: 0%;
+    transition: width .2s;
+  }
+
+  .results {
+    margin-top: 20px;
+  }
+
+  .results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .results-header h2 {
+    font-size: 16px;
+    margin: 0;
+  }
+
+  .results-count {
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .sticker-card {
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+  }
+
+  .sticker-card h3 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    color: var(--primary);
+  }
+
+  .field-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .field-label {
+    flex: 0 0 80px;
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  .field-input {
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 14px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    background: #f9fafb;
+    color: var(--text);
+    min-width: 0;
+  }
+
+  .field-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    background: #fff;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 32px 16px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: #111827;
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s, transform .2s;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  .raw-text-toggle {
+    margin-top: 16px;
+    text-align: center;
+  }
+
+  .raw-text-toggle a {
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .raw-text {
+    margin-top: 12px;
+    background: #f3f4f6;
+    border-radius: 8px;
+    padding: 12px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: #4b5563;
+    white-space: pre-wrap;
+    word-break: break-all;
+    display: none;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+
+  .raw-text.visible { display: block; }
+
+  @media (max-width: 600px) {
+    .field-label { flex: 0 0 70px; font-size: 12px; }
+    .field-input { font-size: 13px; }
+    .sticker-card h3 { font-size: 14px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Coralis 라벨 OCR 추출기</h1>
+    <p>스티커 이미지를 업로드하면 LOT 번호와 유효기간을 자동으로 추출합니다</p>
+  </header>
+
+  <label class="dropzone" id="dropzone">
+    <p><strong>이미지를 드래그하거나 클릭하여 업로드</strong></p>
+    <p class="hint">JPG, PNG 등의 사진 파일 지원</p>
+    <input type="file" id="fileInput" accept="image/*" />
+  </label>
+
+  <div class="preview-section" id="previewSection">
+    <div class="preview-card">
+      <img id="previewImg" alt="업로드된 이미지" />
+      <div class="actions-row">
+        <button class="btn" id="analyzeBtn">OCR 분석 시작</button>
+        <button class="btn btn-outline" id="resetBtn">다시 선택</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <p id="loadingText">분석 중...</p>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+  </div>
+
+  <div class="results" id="results"></div>
+
+  <div class="raw-text-toggle" id="rawTextToggle" style="display:none;">
+    <a id="toggleRawBtn">원본 인식 텍스트 보기/숨기기</a>
+    <pre class="raw-text" id="rawText"></pre>
+  </div>
+</div>
+
+<div class="toast" id="toast">클립보드에 복사되었습니다</div>
+
+<script>
+(function() {
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const previewSection = document.getElementById('previewSection');
+  const previewImg = document.getElementById('previewImg');
+  const analyzeBtn = document.getElementById('analyzeBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const loading = document.getElementById('loading');
+  const loadingText = document.getElementById('loadingText');
+  const progressFill = document.getElementById('progressFill');
+  const results = document.getElementById('results');
+  const toast = document.getElementById('toast');
+  const rawTextToggle = document.getElementById('rawTextToggle');
+  const toggleRawBtn = document.getElementById('toggleRawBtn');
+  const rawText = document.getElementById('rawText');
+
+  let currentFile = null;
+
+  // ===== Upload & Preview =====
+  dropzone.addEventListener('click', () => fileInput.click());
+
+  dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+
+  dropzone.addEventListener('dragleave', () => {
+    dropzone.classList.remove('dragover');
+  });
+
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  });
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) handleFile(file);
+  });
+
+  function handleFile(file) {
+    if (!file.type.startsWith('image/')) {
+      showToast('이미지 파일만 업로드 가능합니다');
+      return;
+    }
+    currentFile = file;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      previewImg.src = e.target.result;
+      previewSection.classList.add('visible');
+      results.innerHTML = '';
+      rawTextToggle.style.display = 'none';
+      rawText.classList.remove('visible');
+    };
+    reader.readAsDataURL(file);
+  }
+
+  resetBtn.addEventListener('click', () => {
+    currentFile = null;
+    fileInput.value = '';
+    previewSection.classList.remove('visible');
+    results.innerHTML = '';
+    rawTextToggle.style.display = 'none';
+  });
+
+  // ===== OCR =====
+  analyzeBtn.addEventListener('click', async () => {
+    if (!currentFile) return;
+    await runOCR(currentFile);
+  });
+
+  async function runOCR(file) {
+    loading.classList.add('visible');
+    results.innerHTML = '';
+    rawTextToggle.style.display = 'none';
+    analyzeBtn.disabled = true;
+    resetBtn.disabled = true;
+    progressFill.style.width = '0%';
+    loadingText.textContent = 'OCR 엔진 초기화 중...';
+
+    try {
+      const worker = await Tesseract.createWorker('eng', 1, {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            const pct = Math.round(m.progress * 100);
+            progressFill.style.width = pct + '%';
+            loadingText.textContent = `텍스트 분석 중... ${pct}%`;
+          } else if (m.status) {
+            loadingText.textContent = translateStatus(m.status);
+          }
+        }
+      });
+
+      await worker.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:/ .LOT'
+      });
+
+      const { data } = await worker.recognize(file);
+      await worker.terminate();
+
+      const stickers = extractStickers(data);
+      renderResults(stickers);
+      rawText.textContent = data.text;
+      rawTextToggle.style.display = 'block';
+    } catch (err) {
+      console.error(err);
+      results.innerHTML = `<div class="empty-state">분석 중 오류가 발생했습니다: ${err.message}</div>`;
+    } finally {
+      loading.classList.remove('visible');
+      analyzeBtn.disabled = false;
+      resetBtn.disabled = false;
+    }
+  }
+
+  function translateStatus(status) {
+    const map = {
+      'loading tesseract core': 'OCR 엔진 로딩 중...',
+      'initializing tesseract': 'OCR 엔진 초기화 중...',
+      'loading language traineddata': '언어 데이터 로딩 중...',
+      'initializing api': 'API 초기화 중...',
+      'recognizing text': '텍스트 인식 중...'
+    };
+    return map[status] || '분석 중...';
+  }
+
+  // ===== Extraction Logic =====
+  // Strategy: collect all words with bounding boxes.
+  // Find LOT matches and date matches, then for each LOT find the
+  // spatially nearest date and pick the latest year date as expiration.
+  function extractStickers(data) {
+    const words = collectWords(data);
+    const text = data.text;
+
+    // Find LOT candidates: word starting with "LOT" or token following a LOT label.
+    const lotPattern = /\b([A-Z0-9]{6,12})\b/g;
+    const datePattern = /(\d{4})[-\.\/ ]?(\d{2})[-\.\/ ]?(\d{2})/g;
+
+    // Walk through lines to find LOT and date contextually.
+    const lines = collectLines(data);
+
+    const lots = []; // { value, bbox, lineIdx }
+    const dates = []; // { value (Date), raw, bbox, lineIdx }
+
+    lines.forEach((line, idx) => {
+      const lineText = line.text;
+
+      // LOT detection: look for "LOT" followed by token (same line or next)
+      const lotMatches = [...lineText.matchAll(/LOT[\s:]*([A-Z0-9]{4,15})/gi)];
+      lotMatches.forEach(m => {
+        const val = m[1].toUpperCase();
+        if (isPlausibleLot(val)) {
+          lots.push({ value: val, bbox: line.bbox, lineIdx: idx });
+        }
+      });
+
+      // If "LOT" appears at end of line with no token, check next line first token
+      if (/\bLOT\s*$/i.test(lineText.trim()) && lines[idx+1]) {
+        const next = lines[idx+1].text.trim();
+        const tokenMatch = next.match(/^([A-Z0-9]{4,15})/i);
+        if (tokenMatch && isPlausibleLot(tokenMatch[1].toUpperCase())) {
+          lots.push({ value: tokenMatch[1].toUpperCase(), bbox: lines[idx+1].bbox, lineIdx: idx+1 });
+        }
+      }
+
+      // Date detection
+      const dateMatches = [...lineText.matchAll(/(\d{4})[-\.\/]?(\d{2})[-\.\/]?(\d{2})/g)];
+      dateMatches.forEach(m => {
+        const y = parseInt(m[1], 10);
+        const mo = parseInt(m[2], 10);
+        const d = parseInt(m[3], 10);
+        if (y >= 2000 && y <= 2099 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+          dates.push({
+            year: y,
+            month: mo,
+            day: d,
+            raw: m[0],
+            yyyymmdd: `${y}${pad(mo)}${pad(d)}`,
+            bbox: line.bbox,
+            lineIdx: idx
+          });
+        }
+      });
+    });
+
+    // Deduplicate LOTs (keep order, unique by value)
+    const seenLot = new Set();
+    const uniqueLots = lots.filter(l => {
+      if (seenLot.has(l.value)) return false;
+      seenLot.add(l.value);
+      return true;
+    });
+
+    // For each LOT, find the latest date in spatial proximity.
+    // Group dates that belong to the same sticker as the LOT.
+    const stickers = uniqueLots.map(lot => {
+      // Compute distance from LOT bbox center to each date bbox center.
+      const lotCenter = bboxCenter(lot.bbox);
+      const scoredDates = dates.map(dt => {
+        const dCenter = bboxCenter(dt.bbox);
+        const dist = Math.hypot(dCenter.x - lotCenter.x, dCenter.y - lotCenter.y);
+        return { ...dt, dist };
+      });
+
+      // Pick dates that are within a reasonable radius. We assume one sticker's
+      // info clusters spatially. Use the median bbox height as scale.
+      scoredDates.sort((a, b) => a.dist - b.dist);
+
+      // Take up to the closest ~6 dates, then pick the one with the latest year (expiration).
+      const candidates = scoredDates.slice(0, 6);
+      let expiration = null;
+      if (candidates.length > 0) {
+        // Among candidates, the future-most (latest) date is the expiration.
+        candidates.sort((a, b) => {
+          const ka = a.year * 10000 + a.month * 100 + a.day;
+          const kb = b.year * 10000 + b.month * 100 + b.day;
+          return kb - ka;
+        });
+        expiration = candidates[0];
+      }
+
+      return {
+        lot: lot.value,
+        expiration: expiration ? expiration.yyyymmdd : ''
+      };
+    });
+
+    // Fallback: if no LOTs detected via pattern, try a global scan
+    if (stickers.length === 0) {
+      const globalLots = [...text.matchAll(/LOT[\s:]*([A-Z0-9]{4,15})/gi)]
+        .map(m => m[1].toUpperCase())
+        .filter(isPlausibleLot);
+      const uniq = [...new Set(globalLots)];
+      const futureDate = dates
+        .slice()
+        .sort((a, b) => (b.year*10000+b.month*100+b.day) - (a.year*10000+a.month*100+a.day))[0];
+      return uniq.map(lot => ({
+        lot,
+        expiration: futureDate ? futureDate.yyyymmdd : ''
+      }));
+    }
+
+    return stickers;
+  }
+
+  function isPlausibleLot(s) {
+    // LOT typically has letters AND digits, length 6-12.
+    if (s.length < 5 || s.length > 14) return false;
+    if (!/[A-Z]/.test(s)) return false;
+    if (!/[0-9]/.test(s)) return false;
+    // Exclude things that look like dates
+    if (/^\d{4}-?\d{2}-?\d{2}$/.test(s)) return false;
+    return true;
+  }
+
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+  function bboxCenter(bbox) {
+    return {
+      x: (bbox.x0 + bbox.x1) / 2,
+      y: (bbox.y0 + bbox.y1) / 2
+    };
+  }
+
+  function collectWords(data) {
+    const words = [];
+    (data.words || []).forEach(w => {
+      words.push({ text: w.text, bbox: w.bbox });
+    });
+    return words;
+  }
+
+  function collectLines(data) {
+    const lines = [];
+    // Tesseract.js v5 nests lines inside blocks/paragraphs.
+    const walk = (node) => {
+      if (!node) return;
+      if (node.lines) {
+        node.lines.forEach(l => lines.push({ text: l.text, bbox: l.bbox }));
+      }
+      if (node.paragraphs) node.paragraphs.forEach(walk);
+      if (node.blocks) node.blocks.forEach(walk);
+    };
+    walk(data);
+    if (lines.length === 0 && data.text) {
+      // Fallback: split text by newline; no bboxes available.
+      data.text.split(/\r?\n/).forEach(t => {
+        if (t.trim()) lines.push({ text: t, bbox: { x0: 0, y0: 0, x1: 0, y1: 0 } });
+      });
+    }
+    return lines;
+  }
+
+  // ===== Rendering =====
+  function renderResults(stickers) {
+    if (!stickers || stickers.length === 0) {
+      results.innerHTML = `
+        <div class="empty-state">
+          인식된 LOT 정보가 없습니다.<br>
+          이미지가 선명한지 확인하거나 다시 촬영해 주세요.
+        </div>`;
+      return;
+    }
+
+    const header = `
+      <div class="results-header">
+        <h2>추출 결과</h2>
+        <span class="results-count">${stickers.length}개 스티커</span>
+      </div>`;
+
+    const cards = stickers.map((s, i) => `
+      <div class="sticker-card" data-idx="${i}">
+        <h3>스티커 #${i + 1}</h3>
+        <div class="field-row">
+          <span class="field-label">LOT</span>
+          <input class="field-input" data-field="lot" value="${escapeHtml(s.lot)}" />
+          <button class="btn btn-sm" data-copy="lot">복사</button>
+        </div>
+        <div class="field-row">
+          <span class="field-label">유효기간</span>
+          <input class="field-input" data-field="exp" value="${escapeHtml(s.expiration)}" placeholder="YYYYMMDD" />
+          <button class="btn btn-sm" data-copy="exp">복사</button>
+        </div>
+      </div>
+    `).join('');
+
+    results.innerHTML = header + cards;
+
+    // Bind copy buttons
+    results.querySelectorAll('.sticker-card').forEach(card => {
+      card.querySelectorAll('[data-copy]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const field = btn.getAttribute('data-copy');
+          const input = card.querySelector(`[data-field="${field}"]`);
+          if (input && input.value) {
+            copyToClipboard(input.value);
+          } else {
+            showToast('복사할 값이 없습니다');
+          }
+        });
+      });
+    });
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ===== Clipboard & Toast =====
+  function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => showToast('클립보드에 복사되었습니다'),
+        () => fallbackCopy(text)
+      );
+    } else {
+      fallbackCopy(text);
+    }
+  }
+
+  function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      showToast('클립보드에 복사되었습니다');
+    } catch (e) {
+      showToast('복사에 실패했습니다');
+    }
+    document.body.removeChild(ta);
+  }
+
+  let toastTimer = null;
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toast.classList.remove('show');
+    }, 1800);
+  }
+
+  toggleRawBtn.addEventListener('click', () => {
+    rawText.classList.toggle('visible');
+  });
+})();
+</script>
+</body>
+</html>
