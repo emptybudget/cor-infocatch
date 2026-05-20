@@ -283,7 +283,11 @@
     object-fit: cover;
     border: 1px solid var(--border);
     image-rendering: -webkit-optimize-contrast;
+    cursor: zoom-in;
+    transition: transform .12s;
   }
+
+  .sticker-card .thumb:hover { transform: scale(1.02); }
 
   .sticker-card .fields {
     grid-column: 2;
@@ -335,6 +339,48 @@
     color: var(--muted);
     font-size: 14px;
   }
+
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 20px;
+    cursor: zoom-out;
+  }
+
+  .lightbox.show { display: flex; }
+
+  .lightbox img {
+    max-width: 95vw;
+    max-height: 92vh;
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    background: #fff;
+  }
+
+  .lightbox-close {
+    position: absolute;
+    top: 16px;
+    right: 20px;
+    background: rgba(255,255,255,0.15);
+    border: none;
+    color: #fff;
+    font-size: 28px;
+    width: 44px;
+    height: 44px;
+    border-radius: 22px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  .lightbox-close:hover { background: rgba(255,255,255,0.25); }
 
   .toast {
     position: fixed;
@@ -438,6 +484,11 @@
   </div>
 </div>
 
+<div class="lightbox" id="lightbox">
+  <button class="lightbox-close" id="lightboxClose" aria-label="닫기">×</button>
+  <img id="lightboxImg" alt="확대 이미지" />
+</div>
+
 <div class="toast" id="toast">클립보드에 복사되었습니다</div>
 
 <script>
@@ -456,9 +507,13 @@
   const rawTextToggle = document.getElementById('rawTextToggle');
   const toggleRawBtn = document.getElementById('toggleRawBtn');
   const rawText = document.getElementById('rawText');
+  const lightbox = document.getElementById('lightbox');
+  const lightboxImg = document.getElementById('lightboxImg');
+  const lightboxClose = document.getElementById('lightboxClose');
 
   let currentFile = null;
   let ocrCanvas = null; // canvas used for OCR; reused for crop thumbnails
+  let currentStickers = [];
 
   // ===== Upload & Preview =====
   dropzone.addEventListener('click', () => fileInput.click());
@@ -912,6 +967,7 @@
 
   // ===== Rendering =====
   function renderResults(stickers) {
+    currentStickers = stickers || [];
     if (!stickers || stickers.length === 0) {
       results.innerHTML = `
         <div class="empty-state">
@@ -955,6 +1011,15 @@
     }).join('');
 
     results.innerHTML = header + cards;
+
+    // Bind thumb click → lightbox
+    results.querySelectorAll('.sticker-card .thumb').forEach(thumb => {
+      thumb.addEventListener('click', () => {
+        const card = thumb.closest('.sticker-card');
+        const idx = parseInt(card.getAttribute('data-idx'), 10);
+        openLightbox(idx);
+      });
+    });
 
     // Bind copy buttons
     results.querySelectorAll('.sticker-card').forEach(card => {
@@ -1008,6 +1073,65 @@
     ctx.drawImage(ocrCanvas, sx, sy, sw, sh, 0, 0, SIZE, SIZE);
     try {
       return out.toDataURL('image/jpeg', 0.9);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ===== Lightbox =====
+  function openLightbox(stickerIdx) {
+    const s = currentStickers[stickerIdx];
+    if (!s || !ocrCanvas) return;
+    const hi = makeHiResCrop(s.cropBox);
+    if (!hi) return;
+    lightboxImg.src = hi;
+    lightbox.classList.add('show');
+  }
+
+  function closeLightbox() {
+    lightbox.classList.remove('show');
+    lightboxImg.src = '';
+  }
+
+  lightbox.addEventListener('click', (e) => {
+    if (e.target === lightbox) closeLightbox();
+  });
+  lightboxClose.addEventListener('click', closeLightbox);
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && lightbox.classList.contains('show')) closeLightbox();
+  });
+
+  // High-resolution crop for the lightbox: keep the bbox aspect, pad
+  // modestly so LOT/date stay legible at large size.
+  function makeHiResCrop(box) {
+    if (!ocrCanvas || !box || box.x1 <= box.x0 || box.y1 <= box.y0) return null;
+    const W = ocrCanvas.width, H = ocrCanvas.height;
+    const bw = box.x1 - box.x0;
+    const bh = box.y1 - box.y0;
+
+    const pad = Math.max(Math.max(bw, bh) * 0.4, Math.min(W, H) * 0.02);
+    let sx = Math.max(0, box.x0 - pad);
+    let sy = Math.max(0, box.y0 - pad);
+    let sx1 = Math.min(W, box.x1 + pad);
+    let sy1 = Math.min(H, box.y1 + pad);
+    let sw = sx1 - sx;
+    let sh = sy1 - sy;
+
+    // Target ~1600px on the long side
+    const TARGET = 1600;
+    const scale = Math.min(TARGET / Math.max(sw, sh), 2.5);
+    const ow = Math.round(sw * scale);
+    const oh = Math.round(sh * scale);
+
+    const out = document.createElement('canvas');
+    out.width = ow;
+    out.height = oh;
+    const ctx = out.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(ocrCanvas, sx, sy, sw, sh, 0, 0, ow, oh);
+    try {
+      return out.toDataURL('image/jpeg', 0.92);
     } catch (e) {
       return null;
     }
