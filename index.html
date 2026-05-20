@@ -831,40 +831,28 @@
     analyzeBtn.disabled = true;
     resetBtn.disabled = true;
     progressFill.style.width = '0%';
-    loadingText.textContent = 'OCR 엔진 초기화 중...';
+    loadingText.textContent = '이미지 전처리 중...';
 
     try {
       ocrCanvas = await preprocessImage(file);
 
-      let passIdx = 0;
-      const PASSES = 2;
-      const worker = await Tesseract.createWorker('eng', 1, {
-        logger: (m) => {
-          if (m.status === 'recognizing text') {
-            const pct = Math.round(((passIdx + m.progress) / PASSES) * 100);
-            progressFill.style.width = pct + '%';
-            loadingText.textContent = `텍스트 분석 중... ${pct}% (${passIdx + 1}/${PASSES})`;
-          } else if (m.status) {
-            loadingText.textContent = translateStatus(m.status);
-          }
-        }
-      });
+      // Try per-sticker detection first. OpenCV.js is ~9MB on first load
+      // (CDN-cached thereafter); a network/load failure transparently
+      // falls back to the legacy whole-image 2-pass OCR.
+      loadingText.textContent = '스티커 영역 감지 중...';
+      progressFill.style.width = '5%';
+      let boxes = [];
+      try {
+        boxes = await detectStickerBoxes(ocrCanvas);
+      } catch (e) {
+        console.warn('Sticker detection unavailable:', e);
+      }
 
-      // Pass 1: PSM 11 (sparse text) — best for scattered stickers.
-      await worker.setParameters({ tessedit_pageseg_mode: '11' });
-      const r1 = await worker.recognize(ocrCanvas);
-      passIdx = 1;
-
-      // Pass 2: PSM 6 (uniform block) — catches words PSM 11 misses.
-      await worker.setParameters({ tessedit_pageseg_mode: '6' });
-      const r2 = await worker.recognize(ocrCanvas);
-
-      await worker.terminate();
-
-      detectedStickers = extractStickers([r1.data, r2.data]);
-      applyTemplateAndRender();
-      rawText.textContent = '[PSM 11]\n' + r1.data.text + '\n\n[PSM 6]\n' + r2.data.text;
-      rawTextToggle.style.display = 'block';
+      if (boxes.length >= 1 && boxes.length <= 40) {
+        await runPerStickerOCR(boxes);
+      } else {
+        await runFullImageOCR();
+      }
     } catch (err) {
       console.error(err);
       results.innerHTML = `<div class="empty-state">분석 중 오류가 발생했습니다: ${err.message}</div>`;
@@ -873,6 +861,167 @@
       analyzeBtn.disabled = false;
       resetBtn.disabled = false;
     }
+  }
+
+  // Per-sticker pipeline: one OCR pass per detected rectangle, reusing
+  // a single Tesseract worker for speed. extractStickers is reused on
+  // each crop's OCR data; cropBox is overridden with the detection box
+  // so the preview highlight outlines the whole sticker, not just the
+  // LOT region.
+  async function runPerStickerOCR(boxes) {
+    loadingText.textContent = `${boxes.length}개 스티커 감지 — 개별 분석 중...`;
+    const worker = await Tesseract.createWorker('eng', 1);
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+
+    detectedStickers = [];
+    const rawTexts = [];
+    for (let i = 0; i < boxes.length; i++) {
+      progressFill.style.width = (10 + (i / boxes.length) * 85) + '%';
+      loadingText.textContent = `OCR 진행: ${i + 1}/${boxes.length}`;
+      const box = boxes[i];
+      const pad = 8;
+      const x0 = Math.max(0, box.x - pad);
+      const y0 = Math.max(0, box.y - pad);
+      const x1 = Math.min(ocrCanvas.width, box.x + box.w + pad);
+      const y1 = Math.min(ocrCanvas.height, box.y + box.h + pad);
+      const cw = x1 - x0, ch = y1 - y0;
+      const c = document.createElement('canvas');
+      c.width = cw; c.height = ch;
+      c.getContext('2d').drawImage(ocrCanvas, x0, y0, cw, ch, 0, 0, cw, ch);
+
+      const { data } = await worker.recognize(c);
+      rawTexts.push(`[#${i + 1}]\n${data.text}`);
+
+      const found = extractStickers([data]);
+      const stickerBox = { x0, y0, x1, y1 };
+      if (found.length === 0) {
+        // Detected the region but couldn't extract anything — keep it
+        // visible as an unknown card so the user can ROI / type manually.
+        detectedStickers.push({
+          lot: '', expiration: '', cropBox: stickerBox,
+          productName: '', categoryIdx: -1, recognized: false,
+          sortKey: 999, isPlaceholder: false
+        });
+      } else {
+        for (const s of found) {
+          s.cropBox = stickerBox;
+          detectedStickers.push(s);
+        }
+      }
+    }
+    await worker.terminate();
+    progressFill.style.width = '100%';
+
+    applyTemplateAndRender();
+    rawText.textContent = rawTexts.join('\n\n');
+    rawTextToggle.style.display = 'block';
+  }
+
+  // Legacy whole-image OCR — used as fallback when sticker detection
+  // finds nothing usable (e.g. OpenCV failed to load, or photo was
+  // an extreme outlier).
+  async function runFullImageOCR() {
+    let passIdx = 0;
+    const PASSES = 2;
+    const worker = await Tesseract.createWorker('eng', 1, {
+      logger: (m) => {
+        if (m.status === 'recognizing text') {
+          const pct = Math.round(((passIdx + m.progress) / PASSES) * 100);
+          progressFill.style.width = pct + '%';
+          loadingText.textContent = `텍스트 분석 중... ${pct}% (${passIdx + 1}/${PASSES})`;
+        } else if (m.status) {
+          loadingText.textContent = translateStatus(m.status);
+        }
+      }
+    });
+
+    await worker.setParameters({ tessedit_pageseg_mode: '11' });
+    const r1 = await worker.recognize(ocrCanvas);
+    passIdx = 1;
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    const r2 = await worker.recognize(ocrCanvas);
+    await worker.terminate();
+
+    detectedStickers = extractStickers([r1.data, r2.data]);
+    applyTemplateAndRender();
+    rawText.textContent = '[PSM 11]\n' + r1.data.text + '\n\n[PSM 6]\n' + r2.data.text;
+    rawTextToggle.style.display = 'block';
+  }
+
+  // ===== Sticker rectangle detection (OpenCV.js) =====
+  let cvLoaded = false;
+  let cvLoadingPromise = null;
+  function loadOpenCV() {
+    if (cvLoaded) return Promise.resolve();
+    if (cvLoadingPromise) return cvLoadingPromise;
+    cvLoadingPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://docs.opencv.org/4.x/opencv.js';
+      script.async = true;
+      script.onload = () => {
+        if (typeof cv === 'undefined') return reject(new Error('cv undefined'));
+        if (cv.Mat) { cvLoaded = true; resolve(); return; }
+        cv.onRuntimeInitialized = () => { cvLoaded = true; resolve(); };
+      };
+      script.onerror = () => reject(new Error('OpenCV failed to load'));
+      document.head.appendChild(script);
+    });
+    return cvLoadingPromise;
+  }
+
+  // Identify likely sticker rectangles in the preprocessed canvas.
+  // Strategy: stickers are bright/white-ish patches on a darker box
+  // surface. Adaptive threshold → morphological close → external
+  // contours → filter by area + aspect ratio.
+  async function detectStickerBoxes(canvas) {
+    await loadOpenCV();
+    const src = cv.imread(canvas);
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    const bin = new cv.Mat();
+    cv.adaptiveThreshold(gray, bin, 255,
+      cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY,
+      61, -5);
+
+    const ks = Math.max(15, Math.round(Math.min(canvas.width, canvas.height) * 0.012));
+    const kernel = cv.Mat.ones(ks, ks, cv.CV_8U);
+    const closed = new cv.Mat();
+    cv.morphologyEx(bin, closed, cv.MORPH_CLOSE, kernel);
+
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    cv.findContours(closed, contours, hierarchy,
+      cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    const imgArea = canvas.width * canvas.height;
+    const minArea = imgArea * 0.003;
+    const maxArea = imgArea * 0.4;
+    const boxes = [];
+    for (let i = 0; i < contours.size(); i++) {
+      const c = contours.get(i);
+      const area = cv.contourArea(c);
+      if (area >= minArea && area <= maxArea) {
+        const r = cv.boundingRect(c);
+        const ar = r.width / r.height;
+        if (ar >= 0.3 && ar <= 5) {
+          boxes.push({ x: r.x, y: r.y, w: r.width, h: r.height });
+        }
+      }
+      c.delete();
+    }
+
+    src.delete(); gray.delete(); bin.delete();
+    kernel.delete(); closed.delete();
+    contours.delete(); hierarchy.delete();
+
+    // Top-to-bottom, then left-to-right within each row band.
+    boxes.sort((a, b) => {
+      const rowDiff = a.y - b.y;
+      if (Math.abs(rowDiff) > Math.min(a.h, b.h) * 0.5) return rowDiff;
+      return a.x - b.x;
+    });
+    return boxes;
   }
 
   // Upscale + grayscale + light contrast boost. Tesseract is much more
