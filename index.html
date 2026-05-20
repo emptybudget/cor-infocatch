@@ -759,38 +759,48 @@
     };
   }
 
-  // Pull the product name text for one LOT: lines between the category
-  // keyword (anchor above the LOT) and the first Material/REF/LOT marker.
-  // Restricted to the LOT's horizontal column to avoid pulling text from
-  // adjacent stickers when OCR merged rows.
+  // Extract the product name lines for one sticker.
+  // Constraints (kept tight so we don't bleed into neighboring stickers
+  // or duplicate the same line emitted by both OCR passes):
+  //   - Anchored on the category-keyword bbox above the LOT
+  //   - Vertical band: [kwAnchor.y0, lot.y0)
+  //   - Horizontal column: within ~8 LOT-heights of the kwAnchor's center
+  //   - Skip the boilerplate "Coralis Reverse Shoulder System" header
+  //   - Stop at the first Material/REF/LOT marker
+  //   - Dedupe by normalized text and cap at 4 lines
   function extractNameForLot(lot, kwAnchor, lines) {
     if (!kwAnchor) return '';
-    const yTop = kwAnchor.bbox.y0;
+    const lotH = Math.max(1, lot.bbox.y1 - lot.bbox.y0);
+    const yTop = kwAnchor.bbox.y0 - lotH * 0.3;
     const yBot = lot.bbox.y0;
     if (yBot <= yTop) return '';
 
-    const lotCx = (lot.bbox.x0 + lot.bbox.x1) / 2;
-    const lotH = Math.max(1, lot.bbox.y1 - lot.bbox.y0);
-    const xTolerance = lotH * 18;
+    const ancCx = (kwAnchor.bbox.x0 + kwAnchor.bbox.x1) / 2;
+    const xTolerance = lotH * 8;
 
     const candidates = lines.filter(l => {
       const cy = (l.bbox.y0 + l.bbox.y1) / 2;
       if (cy < yTop || cy >= yBot) return false;
       const cx = (l.bbox.x0 + l.bbox.x1) / 2;
-      if (Math.abs(cx - lotCx) > xTolerance) return false;
+      if (Math.abs(cx - ancCx) > xTolerance) return false;
       const t = (l.text || '').trim();
       if (!t) return false;
+      if (/coralis\s+reverse\s+shoulder/i.test(t)) return false;
       return true;
     });
     candidates.sort((a, b) => a.bbox.y0 - b.bbox.y0);
 
-    // Stop at the first Material/REF/LOT marker line.
     const stopRe = /^\s*(material|ref\b|lot\b)/i;
+    const seen = new Set();
     const nameLines = [];
     for (const l of candidates) {
       const t = l.text.trim();
       if (stopRe.test(t)) break;
+      const norm = t.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
       nameLines.push(t);
+      if (nameLines.length >= 4) break;
     }
     return nameLines.join(' ').replace(/\s+/g, ' ').trim();
   }
