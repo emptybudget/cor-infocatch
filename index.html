@@ -711,75 +711,6 @@
   // spatially nearest date(s) and choose the future-most as the expiration.
   const MAX_STICKERS = 10;
 
-  // ---- GTIN → product database (from Coralis raw data) ----
-  // The (01)xxxxxxxxxxxxxx GS1 code uniquely identifies the product.
-  // Far more reliable than keyword matching against blurry OCR text.
-  const GTIN_DB = {
-    '08800017265490': 'Total Shoulder Humeral Head 42, 18mm',
-    '08800017265506': 'Humeral Head 42*21mm',
-    '08800017265681': 'Humeral Head 46*18mm',
-    '08800017265698': 'Humeral Head 46*21mm',
-    '08800017265773': 'Humeral Stem 6mm',
-    '08800017265780': 'Humeral Stem 8mm',
-    '08800017265797': 'Humeral Stem 10mm',
-    '08800017265803': 'Humeral Stem 12mm',
-    '08800017265810': 'Humeral Stem 14mm',
-    '08800017265995': 'Pegged Glenoid 44mm',
-    '08800017266008': 'Pegged Glenoid 48mm',
-    '08800017266015': 'Pegged Glenoid 52mm',
-    '08800017267791': 'Humeral Stem 7mm',
-    '08800017267807': 'Humeral Stem 9mm',
-    '08800017267814': 'Humeral Stem 11mm',
-    '08800017267821': 'Humeral Stem 13mm',
-    '08800017267852': 'Glenosphere Head 36 +0 (CENTRIC)',
-    '08800017267869': 'Glenosphere Head 36 +4 (CENTRIC)',
-    '08800017267876': 'Glenosphere Head 36 +0/+4 (ECCENTRIC)',
-    '08800017267937': 'Glenoid Baseplate 26mm',
-    '08800017267944': 'Glenoid Baseplate 28mm',
-    '08800017267951': '6.5mm Modular Central Screw 26mm',
-    '08800017267968': '6.5mm Modular Central Screw 30mm',
-    '08800017267975': '4.5mm Locking Screw 34mm',
-    '08800017267982': '6.5mm Modular Central Screw 38mm',
-    '08800017268002': '4.5mm Locking Screw 14mm',
-    '08800017268019': '4.5mm Locking Screw 18mm',
-    '08800017268026': '4.5mm Locking Screw 22mm',
-    '08800017268033': '4.5mm Locking Screw 26mm',
-    '08800017268040': '4.5mm Locking Screw 30mm',
-    '08800017268057': '4.5mm Locking Screw 34mm',
-    '08800017268064': '4.5mm Locking Screw 38mm',
-    '08800017268095': '4.5mm Non-Locking Screw 18mm',
-    '08800017268101': '4.5mm Non-Locking Screw 22mm',
-    '08800017268118': '4.5mm Non-Locking Screw 26mm',
-    '08800017268132': '4.5mm Non-Locking Screw 34mm',
-    '08800017269573': 'Humeral Cup Centric +8mm',
-    '08800017269580': 'Humeral Cup Medial Offset 3mm',
-    '08800017269597': 'Humeral Insert 36mm Std',
-    '08800017269603': 'Humeral Insert 36mm +3 Std',
-    '08800017269610': 'Humeral Insert 36mm +6 Std',
-    '08800017269627': 'Humeral Insert 36mm +9 Std',
-    '08800017269702': 'Humeral Spacer Assembly Centric +8mm',
-    '08800017269719': 'Humeral Spacer Assembly Ecc +8mm',
-    '08800068900777': '6.5mm Modular Central Screw 18mm',
-    '08800068900791': '6.5mm Modular Central Screw 22mm',
-    '08800068901682': 'Humeral Cup Medial Offset 6mm',
-    '08800068901705': 'Humeral Spacer Assembly Ecc +6mm',
-    '08800068905796': 'Glenoid Baseplate 10° 26mm 9mm',
-    '08800068905918': 'Glenoid Augment Baseplate 26mm +9mm',
-    '08800068908636': 'Humeral Short Stem 14mm',
-    '08800068908643': 'Humeral Short Stem 13mm',
-    '08800068908650': 'Humeral Short Stem 12mm',
-    '08800068908667': 'Humeral Short Stem 11mm',
-    '08800068908674': 'Humeral Short Stem 9mm',
-    '08800068908681': 'Humeral Short Stem 8mm',
-    '08800068908698': 'Humeral Short Stem 7mm',
-    '08800068908704': 'Humeral Short Stem 6mm',
-    '08800068908728': 'Humeral Short Stem 10mm'
-  };
-
-  // Category order requested by user. The matcher receives the
-  // product name from GTIN_DB (or OCR fallback) and returns the index.
-  const CATEGORY_ORDER = ['Stem', 'Tray', 'Liner', 'Glenosphere', 'Baseplate', 'Central Screw', 'Locking Screw'];
-
   function categorize(productName) {
     if (!productName) return -1;
     const n = productName.toLowerCase();
@@ -794,8 +725,7 @@
     return -1;
   }
 
-  // Per-word category detector. Used to find the category from OCR'd
-  // text when no GTIN is visible (GTIN is usually only in the barcode).
+  // Per-word category detector for keyword-based product matching.
   function categorizeWord(rawToken) {
     const t = String(rawToken || '').toLowerCase().replace(/[^a-z]/g, '');
     if (!t) return -1;
@@ -809,7 +739,7 @@
     return -1;
   }
 
-  // Display label per category for fallback when full product name is unknown.
+  // Display label per category.
   const CATEGORY_LABEL = ['Stem', 'Tray (Cup)', 'Liner (Insert)', 'Glenosphere', 'Baseplate', 'Central Screw', 'Locking Screw'];
 
   // Narrow a line bbox down to the slice of x-range that contains a
@@ -827,17 +757,6 @@
       x1: Math.min(line.bbox.x1, line.bbox.x0 + bw * ((matchIndex + matchLength) / len) + padX),
       y1: line.bbox.y1
     };
-  }
-
-  // Detect the dimension portion of a product name for the spec field.
-  // Falls back to nearest mm-token from OCR if name has no clear size.
-  function extractSpecFromName(name) {
-    if (!name) return '';
-    // Try common patterns: "9mm", "26mm", "+8mm", "26mm +9mm" — keep the
-    // first informative spec chunk after any descriptor.
-    const m = name.match(/\b(\d{1,3}(?:\.\d+)?\s*(?:[*x]\s*\d{1,3})?\s*mm[+\d ]*)/i);
-    if (m) return m[1].trim().replace(/\s+/g, '');
-    return '';
   }
 
   function extractStickers(dataArr) {
@@ -939,37 +858,7 @@
       return true;
     });
 
-    // ---- Find GTIN hits: (01)<14 digits> ----
-    // Tesseract may break it into pieces, so scan over both word tokens
-    // (which can contain the whole "(01)08800...") and over the line text.
-    const gtinHits = []; // { code, name, bbox }
-    const tryAddGtin = (code, bbox) => {
-      if (!code) return;
-      const c = code.replace(/\D/g, '');
-      if (c.length !== 14) return;
-      const name = GTIN_DB[c];
-      if (!name) return; // unknown code → skip
-      gtinHits.push({ code: c, name, bbox });
-    };
-    const gtinRe = /\(?\s*0?1\s*\)?[\s\-]*((?:\d[\s\-]*){14})/g;
-    words.forEach(w => {
-      const t = (w.text || '');
-      const matches = [...t.matchAll(gtinRe)];
-      matches.forEach(m => tryAddGtin(m[1], w.bbox));
-    });
-    lines.forEach(line => {
-      const t = line.text || '';
-      const matches = [...t.matchAll(gtinRe)];
-      matches.forEach(m => tryAddGtin(m[1], line.bbox));
-    });
-    // Fallback: any 14-digit chunk starting with the Corentec prefix 0880
-    const fallbackRe = /\b(0880\d{10})\b/g;
-    lines.forEach(line => {
-      const matches = [...(line.text || '').matchAll(fallbackRe)];
-      matches.forEach(m => tryAddGtin(m[1], line.bbox));
-    });
-
-    // ---- Find product-keyword hits with bboxes (used when GTIN missing) ----
+    // ---- Find product-keyword hits with bboxes ----
     const productHits = []; // { categoryIdx, bbox }
     words.forEach(w => {
       const cidx = categorizeWord(w.text);
@@ -1031,24 +920,12 @@
         return scored[0];
       };
 
-      // GTIN match (most reliable when present)
-      const gtinPick = nearest(gtinHits);
-      let productName = gtinPick ? gtinPick.name : '';
-      let spec = productName ? extractSpecFromName(productName) : '';
-
-      // Keyword-based category (works even when GTIN isn't visible text)
       const kwPick = nearest(productHits);
-      let categoryIdx = categorize(productName);
-      if (categoryIdx < 0 && kwPick) categoryIdx = kwPick.categoryIdx;
+      const categoryIdx = kwPick ? kwPick.categoryIdx : -1;
+      const productName = categoryIdx >= 0 ? CATEGORY_LABEL[categoryIdx] : '';
 
-      // If no full product name from GTIN, synthesize from category label
-      if (!productName && categoryIdx >= 0) productName = CATEGORY_LABEL[categoryIdx];
-
-      // Spec fallback: nearest mm-token from OCR
-      if (!spec) {
-        const dimPick = nearest(dimHits);
-        if (dimPick) spec = dimPick.value;
-      }
+      const dimPick = nearest(dimHits);
+      const spec = dimPick ? dimPick.value : '';
 
       const recognized = categoryIdx >= 0;
 
