@@ -464,6 +464,11 @@
     border-radius: 2px;
   }
 
+  .detected-box.pending {
+    border: 2px dashed var(--primary);
+    background: rgba(37, 99, 235, 0.08);
+  }
+
   .preview-card.roi-mode .roi-overlay { display: block; }
   .preview-card.roi-mode img { filter: brightness(0.85); }
 
@@ -870,6 +875,7 @@
   // LOT region.
   async function runPerStickerOCR(boxes) {
     loadingText.textContent = `${boxes.length}개 스티커 감지 — 개별 분석 중...`;
+    drawDetectionPreview(boxes);
     const worker = await Tesseract.createWorker('eng', 1);
     await worker.setParameters({ tessedit_pageseg_mode: '6' });
 
@@ -1410,8 +1416,11 @@
     updateDetectedBoxes();
   }
 
-  // Draw a red outline on the preview image at every detected sticker's
-  // cropBox so the user can spot missed (un-boxed) areas to re-OCR.
+  // Outline detected sticker regions on the preview.
+  //   red  (.detected-box)         — LOT extracted successfully
+  //   blue (.detected-box.pending) — region detected but not yet
+  //                                  confirmed (mid-OCR or extraction
+  //                                  failed → needs user attention)
   function updateDetectedBoxes() {
     const container = document.getElementById('detectedBoxes');
     if (!container) return;
@@ -1422,12 +1431,32 @@
     currentStickers.forEach(s => {
       if (s.isPlaceholder || !s.cropBox) return;
       const b = s.cropBox;
+      const uncertain = !s.recognized || !s.lot;
       const div = document.createElement('div');
-      div.className = 'detected-box';
+      div.className = 'detected-box' + (uncertain ? ' pending' : '');
       div.style.left = (b.x0 / W * 100) + '%';
       div.style.top = (b.y0 / H * 100) + '%';
       div.style.width = ((b.x1 - b.x0) / W * 100) + '%';
       div.style.height = ((b.y1 - b.y0) / H * 100) + '%';
+      container.appendChild(div);
+    });
+  }
+
+  // Render the raw OpenCV-detected rectangles in blue, before OCR runs,
+  // so the user sees what the detector found while individual stickers
+  // are being analyzed.
+  function drawDetectionPreview(boxes) {
+    const container = document.getElementById('detectedBoxes');
+    if (!container || !ocrCanvas) return;
+    container.innerHTML = '';
+    const W = ocrCanvas.width, H = ocrCanvas.height;
+    boxes.forEach(box => {
+      const div = document.createElement('div');
+      div.className = 'detected-box pending';
+      div.style.left = (box.x / W * 100) + '%';
+      div.style.top = (box.y / H * 100) + '%';
+      div.style.width = (box.w / W * 100) + '%';
+      div.style.height = (box.h / H * 100) + '%';
       container.appendChild(div);
     });
   }
