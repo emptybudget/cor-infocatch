@@ -1230,9 +1230,7 @@
     lightboxImg.src = '';
   }
 
-  lightbox.addEventListener('click', (e) => {
-    if (e.target === lightbox) closeLightbox();
-  });
+  lightbox.addEventListener('click', closeLightbox);
   lightboxClose.addEventListener('click', closeLightbox);
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && lightbox.classList.contains('show')) closeLightbox();
