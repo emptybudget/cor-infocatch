@@ -404,6 +404,13 @@
     margin-left: auto;
   }
 
+  .template-grid input[type=text] {
+    width: 90px;
+    text-align: left;
+    margin-left: 0;
+    margin-right: 4px;
+  }
+
   .template-grid input:focus {
     outline: none;
     border-color: var(--primary);
@@ -581,6 +588,7 @@
           <label>Central Screw <input type="number" min="0" max="20" value="1" data-cat="5" /></label>
           <label>Locking Screw <input type="number" min="0" max="20" value="4" data-cat="6" /></label>
         </div>
+        <button type="button" id="addCategoryBtn" class="btn btn-outline btn-sm" style="margin-top:10px;">+ 항목 추가</button>
       </div>
 
       <div class="dropzone" id="dropzone">
@@ -842,6 +850,10 @@
     if (n.includes('central screw') || n.includes('central scr')) return 5;
     // Locking Screw — must NOT match "Non-Locking"
     if (/(^|[^-])locking\s*screw/.test(n)) return 6;
+    for (let i = 7; i < CATEGORY_LABEL.length; i++) {
+      const kw = CATEGORY_KEYWORDS[i];
+      if (kw && n.includes(kw)) return i;
+    }
     return -1;
   }
 
@@ -856,11 +868,18 @@
     if (t.includes('baseplate') || t.includes('baseplale')) return 4;
     if (t.startsWith('central')) return 5;
     if (t.startsWith('locking') && !t.startsWith('nonlocking')) return 6;
+    for (let i = 7; i < CATEGORY_LABEL.length; i++) {
+      const kw = CATEGORY_KEYWORDS[i];
+      if (kw && t.includes(kw)) return i;
+    }
     return -1;
   }
 
-  // Display label per category.
+  // Display label per category. Custom user-added categories get appended
+  // at indices >= 7; CATEGORY_KEYWORDS holds their match keyword (lowercase,
+  // alpha-only). Indices 0-6 are detected via the fixed rules in categorize.
   const CATEGORY_LABEL = ['Stem', 'Tray (Cup)', 'Liner (Insert)', 'Glenosphere', 'Baseplate', 'Central Screw', 'Locking Screw'];
+  const CATEGORY_KEYWORDS = [];
 
   // Narrow a line bbox down to the slice of x-range that contains a
   // substring match — interpolated by character position. Prevents
@@ -1571,6 +1590,28 @@
     inp.addEventListener('input', updateTemplateTotal);
   });
   updateTemplateTotal();
+
+  document.getElementById('addCategoryBtn').addEventListener('click', () => {
+    const idx = CATEGORY_LABEL.length;
+    CATEGORY_LABEL.push('');
+    CATEGORY_KEYWORDS[idx] = '';
+    const grid = document.querySelector('.template-grid');
+    const label = document.createElement('label');
+    label.innerHTML =
+      `<input type="text" placeholder="이름 (예: Spacer)" data-name-for="${idx}" />` +
+      `<input type="number" min="0" max="20" value="1" data-cat="${idx}" />`;
+    grid.appendChild(label);
+    const nameInput = label.querySelector('[data-name-for]');
+    const qtyInput = label.querySelector('[data-cat]');
+    nameInput.addEventListener('input', () => {
+      const v = nameInput.value.trim();
+      CATEGORY_LABEL[idx] = v || 'Custom';
+      CATEGORY_KEYWORDS[idx] = v.toLowerCase().replace(/[^a-z]/g, '');
+    });
+    qtyInput.addEventListener('input', updateTemplateTotal);
+    nameInput.focus();
+    updateTemplateTotal();
+  });
 
   toggleRawBtn.addEventListener('click', () => {
     rawText.classList.toggle('visible');
