@@ -426,6 +426,28 @@
 
   .sticker-card .thumb.empty:hover { transform: none; }
 
+  .sticker-card .chooser {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    grid-column: 2;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .sticker-card .chooser-label {
+    margin-right: 4px;
+  }
+
+  .sticker-card .chooser-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+
   .sticker-card .missing-badge {
     display: inline-block;
     margin-left: 8px;
@@ -626,6 +648,7 @@
   let currentFile = null;
   let ocrCanvas = null; // canvas used for OCR; reused for crop thumbnails
   let currentStickers = [];
+  let detectedStickers = []; // raw extraction; mutable for chooser-driven category reassignment
 
   // ===== Upload & Preview =====
   dropzone.addEventListener('click', () => fileInput.click());
@@ -737,8 +760,8 @@
 
       await worker.terminate();
 
-      const stickers = applyTemplate(extractStickers([r1.data, r2.data]), getTemplate());
-      renderResults(stickers);
+      detectedStickers = extractStickers([r1.data, r2.data]);
+      applyTemplateAndRender();
       rawText.textContent = '[PSM 11]\n' + r1.data.text + '\n\n[PSM 6]\n' + r2.data.text;
       rawTextToggle.style.display = 'block';
     } catch (err) {
@@ -1121,6 +1144,23 @@
     if (el) el.textContent = total;
   }
 
+  function applyTemplateAndRender() {
+    renderResults(applyTemplate(detectedStickers, getTemplate()));
+  }
+
+  // Categories where (expected − recognized detections) > 0.
+  function computeShortfall(template) {
+    const counts = {};
+    detectedStickers.forEach(s => {
+      if (s.categoryIdx >= 0) counts[s.categoryIdx] = (counts[s.categoryIdx] || 0) + 1;
+    });
+    const short = [];
+    for (let c = 0; c < CATEGORY_LABEL.length; c++) {
+      if ((template[c] || 0) - (counts[c] || 0) > 0) short.push(c);
+    }
+    return short;
+  }
+
   // Group detected stickers by category, then insert empty placeholder
   // cards for any shortfall vs the template. Extras over the template
   // are kept as-is (so legitimate extras still surface).
@@ -1289,6 +1329,8 @@
         <span class="results-count">${stickers.length}개 스티커</span>
       </div>`;
 
+    const shortfall = computeShortfall(getTemplate());
+
     const cards = stickers.map((s, i) => {
       const thumb = s.isPlaceholder ? null : makeCropThumbnail(s.cropBox);
       const thumbHtml = thumb
@@ -1306,6 +1348,17 @@
         ? `<span class="missing-badge" title="감지되지 않음 — 직접 입력해 주세요">미감지</span>`
         : '';
       const cardCls = s.isPlaceholder ? 'sticker-card placeholder' : 'sticker-card';
+
+      // For unknown detected stickers, offer to assign them to a category
+      // that is currently short-stocked vs the template.
+      const showChooser = !s.isPlaceholder && s.categoryIdx < 0 && shortfall.length > 0;
+      const chooserHtml = showChooser
+        ? `<div class="chooser">
+             <span class="chooser-label">이게 무엇인가요?</span>
+             ${shortfall.map(c => `<button class="btn btn-outline chooser-btn" data-assign="${c}">${CATEGORY_LABEL[c]}</button>`).join('')}
+           </div>`
+        : '';
+
       return `
         <div class="${cardCls}" data-idx="${i}">
           ${thumbHtml}
@@ -1322,6 +1375,7 @@
               <button class="btn btn-sm" data-copy="exp">복사</button>
             </div>
           </div>
+          ${chooserHtml}
         </div>`;
     }).join('');
 
@@ -1348,6 +1402,22 @@
             showToast('복사할 값이 없습니다');
           }
         });
+      });
+    });
+
+    // Bind chooser buttons: reassign the unknown sticker to a category
+    // and re-apply the template (drops one placeholder, moves the card).
+    results.querySelectorAll('.chooser-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.sticker-card');
+        const idx = parseInt(card.getAttribute('data-idx'), 10);
+        const newCat = parseInt(btn.getAttribute('data-assign'), 10);
+        const sticker = currentStickers[idx];
+        if (!sticker) return;
+        sticker.categoryIdx = newCat;
+        sticker.recognized = true;
+        sticker.productName = CATEGORY_LABEL[newCat];
+        applyTemplateAndRender();
       });
     });
   }
