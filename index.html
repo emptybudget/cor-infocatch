@@ -506,6 +506,8 @@
     loadingText.textContent = 'OCR 엔진 초기화 중...';
 
     try {
+      const ocrInput = await preprocessImage(file);
+
       const worker = await Tesseract.createWorker('eng', 1, {
         logger: (m) => {
           if (m.status === 'recognizing text') {
@@ -518,11 +520,13 @@
         }
       });
 
+      // PSM 11 = sparse text: find as much text as possible regardless of layout.
+      // Best fit for photos containing multiple separated stickers.
       await worker.setParameters({
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:/ .LOT'
+        tessedit_pageseg_mode: '11'
       });
 
-      const { data } = await worker.recognize(file);
+      const { data } = await worker.recognize(ocrInput);
       await worker.terminate();
 
       const stickers = extractStickers(data);
@@ -539,6 +543,35 @@
     }
   }
 
+  // Upscale small images so small label text becomes legible to Tesseract.
+  // Returns a canvas (Tesseract accepts HTMLCanvasElement).
+  async function preprocessImage(file) {
+    const img = await loadImage(file);
+    const TARGET_LONG_SIDE = 2400;
+    const longSide = Math.max(img.naturalWidth, img.naturalHeight);
+    const scale = longSide < TARGET_LONG_SIDE ? TARGET_LONG_SIDE / longSide : 1;
+    const w = Math.round(img.naturalWidth * scale);
+    const h = Math.round(img.naturalHeight * scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas;
+  }
+
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+      img.src = url;
+    });
+  }
+
   function translateStatus(status) {
     const map = {
       'loading tesseract core': 'OCR 엔진 로딩 중...',
@@ -551,131 +584,161 @@
   }
 
   // ===== Extraction Logic =====
-  // Strategy: collect all words with bounding boxes.
-  // Find LOT matches and date matches, then for each LOT find the
-  // spatially nearest date and pick the latest year date as expiration.
+  // We look at every word emitted by Tesseract, identify LOT candidates
+  // (either via a "LOT" prefix word or via the distinctive Coralis token
+  // pattern by itself), and date candidates. For each LOT, pick the
+  // spatially nearest date(s) and choose the future-most as the expiration.
+  const MAX_STICKERS = 10;
+
   function extractStickers(data) {
-    const words = collectWords(data);
-    const text = data.text;
-
-    // Find LOT candidates: word starting with "LOT" or token following a LOT label.
-    const lotPattern = /\b([A-Z0-9]{6,12})\b/g;
-    const datePattern = /(\d{4})[-\.\/ ]?(\d{2})[-\.\/ ]?(\d{2})/g;
-
-    // Walk through lines to find LOT and date contextually.
+    const words = collectAllWords(data);
     const lines = collectLines(data);
 
-    const lots = []; // { value, bbox, lineIdx }
-    const dates = []; // { value (Date), raw, bbox, lineIdx }
+    // ---- Find LOT candidates ----
+    const lotCandidates = []; // { value, bbox }
 
-    lines.forEach((line, idx) => {
-      const lineText = line.text;
-
-      // LOT detection: look for "LOT" followed by token (same line or next)
-      const lotMatches = [...lineText.matchAll(/LOT[\s:]*([A-Z0-9]{4,15})/gi)];
-      lotMatches.forEach(m => {
-        const val = m[1].toUpperCase();
-        if (isPlausibleLot(val)) {
-          lots.push({ value: val, bbox: line.bbox, lineIdx: idx });
-        }
-      });
-
-      // If "LOT" appears at end of line with no token, check next line first token
-      if (/\bLOT\s*$/i.test(lineText.trim()) && lines[idx+1]) {
-        const next = lines[idx+1].text.trim();
-        const tokenMatch = next.match(/^([A-Z0-9]{4,15})/i);
-        if (tokenMatch && isPlausibleLot(tokenMatch[1].toUpperCase())) {
-          lots.push({ value: tokenMatch[1].toUpperCase(), bbox: lines[idx+1].bbox, lineIdx: idx+1 });
+    // (a) "LOT" prefix on any word (tolerant of OCR errors like L0T)
+    const lotLabelRe = /^L[O0]T:?$/i;
+    words.forEach((w, i) => {
+      const t = (w.text || '').trim();
+      if (lotLabelRe.test(t)) {
+        // Look at the next 1-3 words for the value.
+        for (let j = i + 1; j < Math.min(i + 4, words.length); j++) {
+          const cand = normalizeLotToken(words[j].text);
+          if (cand && isCoralisLot(cand)) {
+            lotCandidates.push({ value: cand, bbox: words[j].bbox });
+            break;
+          }
         }
       }
+      // Inline form: LOT10BFCP02 / LOT:10BFCP02
+      const inline = t.match(/^L[O0]T[:\s]*([A-Z0-9]{5,12})$/i);
+      if (inline) {
+        const cand = normalizeLotToken(inline[1]);
+        if (cand && isCoralisLot(cand)) {
+          lotCandidates.push({ value: cand, bbox: w.bbox });
+        }
+      }
+    });
 
-      // Date detection
-      const dateMatches = [...lineText.matchAll(/(\d{4})[-\.\/]?(\d{2})[-\.\/]?(\d{2})/g)];
-      dateMatches.forEach(m => {
-        const y = parseInt(m[1], 10);
-        const mo = parseInt(m[2], 10);
-        const d = parseInt(m[3], 10);
-        if (y >= 2000 && y <= 2099 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
-          dates.push({
-            year: y,
-            month: mo,
-            day: d,
-            raw: m[0],
-            yyyymmdd: `${y}${pad(mo)}${pad(d)}`,
-            bbox: line.bbox,
-            lineIdx: idx
-          });
+    // (b) Direct token match: Coralis LOTs are typically 7-9 chars,
+    // start with 2 digits then a mix of uppercase letters & digits.
+    words.forEach(w => {
+      const cand = normalizeLotToken(w.text);
+      if (cand && isCoralisLot(cand)) {
+        lotCandidates.push({ value: cand, bbox: w.bbox });
+      }
+    });
+
+    // Also scan raw line text for LOT prefix forms (in case word splitting missed them)
+    lines.forEach(line => {
+      const lineText = line.text || '';
+      const matches = [...lineText.matchAll(/L[O0]T[:\s]*([A-Z0-9]{5,12})/gi)];
+      matches.forEach(m => {
+        const cand = normalizeLotToken(m[1]);
+        if (cand && isCoralisLot(cand)) {
+          lotCandidates.push({ value: cand, bbox: line.bbox });
         }
       });
     });
 
-    // Deduplicate LOTs (keep order, unique by value)
-    const seenLot = new Set();
-    const uniqueLots = lots.filter(l => {
-      if (seenLot.has(l.value)) return false;
-      seenLot.add(l.value);
+    // Deduplicate (keep first-seen bbox)
+    const seen = new Map();
+    lotCandidates.forEach(l => {
+      if (!seen.has(l.value)) seen.set(l.value, l);
+    });
+    const uniqueLots = [...seen.values()];
+
+    // ---- Find date candidates ----
+    const dates = []; // { year, month, day, yyyymmdd, bbox }
+    const dateRe = /(\d{4})[\s\-\.\/]?(\d{2})[\s\-\.\/]?(\d{2})/g;
+
+    // Date can span multiple words ("2036-02-28" may come as one word or three).
+    // Scan line text first.
+    lines.forEach(line => {
+      const t = line.text || '';
+      const matches = [...t.matchAll(dateRe)];
+      matches.forEach(m => addDate(dates, m, line.bbox));
+    });
+
+    // Also scan individual words (some PSMs emit dates as a single word)
+    words.forEach(w => {
+      const t = w.text || '';
+      const matches = [...t.matchAll(dateRe)];
+      matches.forEach(m => addDate(dates, m, w.bbox));
+    });
+
+    // Dedupe dates by yyyymmdd + bbox center (rounded)
+    const dateSeen = new Set();
+    const uniqueDates = dates.filter(d => {
+      const c = bboxCenter(d.bbox);
+      const key = `${d.yyyymmdd}@${Math.round(c.x/10)},${Math.round(c.y/10)}`;
+      if (dateSeen.has(key)) return false;
+      dateSeen.add(key);
       return true;
     });
 
-    // For each LOT, find the latest date in spatial proximity.
-    // Group dates that belong to the same sticker as the LOT.
+    // ---- Pair each LOT with its expiration ----
     const stickers = uniqueLots.map(lot => {
-      // Compute distance from LOT bbox center to each date bbox center.
       const lotCenter = bboxCenter(lot.bbox);
-      const scoredDates = dates.map(dt => {
-        const dCenter = bboxCenter(dt.bbox);
-        const dist = Math.hypot(dCenter.x - lotCenter.x, dCenter.y - lotCenter.y);
-        return { ...dt, dist };
-      });
+      const scored = uniqueDates.map(dt => ({
+        ...dt,
+        dist: Math.hypot(bboxCenter(dt.bbox).x - lotCenter.x, bboxCenter(dt.bbox).y - lotCenter.y)
+      }));
+      scored.sort((a, b) => a.dist - b.dist);
 
-      // Pick dates that are within a reasonable radius. We assume one sticker's
-      // info clusters spatially. Use the median bbox height as scale.
-      scoredDates.sort((a, b) => a.dist - b.dist);
-
-      // Take up to the closest ~6 dates, then pick the one with the latest year (expiration).
-      const candidates = scoredDates.slice(0, 6);
+      // Closest cluster of dates → pick future-most as expiration
+      const nearby = scored.slice(0, 6);
       let expiration = null;
-      if (candidates.length > 0) {
-        // Among candidates, the future-most (latest) date is the expiration.
-        candidates.sort((a, b) => {
-          const ka = a.year * 10000 + a.month * 100 + a.day;
-          const kb = b.year * 10000 + b.month * 100 + b.day;
-          return kb - ka;
-        });
-        expiration = candidates[0];
+      if (nearby.length) {
+        nearby.sort((a, b) =>
+          (b.year*10000 + b.month*100 + b.day) - (a.year*10000 + a.month*100 + a.day)
+        );
+        expiration = nearby[0];
       }
-
       return {
         lot: lot.value,
         expiration: expiration ? expiration.yyyymmdd : ''
       };
     });
 
-    // Fallback: if no LOTs detected via pattern, try a global scan
-    if (stickers.length === 0) {
-      const globalLots = [...text.matchAll(/LOT[\s:]*([A-Z0-9]{4,15})/gi)]
-        .map(m => m[1].toUpperCase())
-        .filter(isPlausibleLot);
-      const uniq = [...new Set(globalLots)];
-      const futureDate = dates
-        .slice()
-        .sort((a, b) => (b.year*10000+b.month*100+b.day) - (a.year*10000+a.month*100+a.day))[0];
-      return uniq.map(lot => ({
-        lot,
-        expiration: futureDate ? futureDate.yyyymmdd : ''
-      }));
-    }
-
-    return stickers;
+    return stickers.slice(0, MAX_STICKERS);
   }
 
-  function isPlausibleLot(s) {
-    // LOT typically has letters AND digits, length 6-12.
-    if (s.length < 5 || s.length > 14) return false;
+  function addDate(arr, m, bbox) {
+    const y = parseInt(m[1], 10);
+    const mo = parseInt(m[2], 10);
+    const d = parseInt(m[3], 10);
+    if (y < 2000 || y > 2099) return;
+    if (mo < 1 || mo > 12) return;
+    if (d < 1 || d > 31) return;
+    arr.push({
+      year: y, month: mo, day: d,
+      yyyymmdd: `${y}${pad(mo)}${pad(d)}`,
+      bbox: bbox || { x0: 0, y0: 0, x1: 0, y1: 0 }
+    });
+  }
+
+  // Normalize a token to uppercase alphanumeric; common OCR confusions
+  // (lowercase o/i/l) are mapped to digits when surrounded by digits.
+  function normalizeLotToken(raw) {
+    if (!raw) return null;
+    const s = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (s.length < 5 || s.length > 12) return null;
+    return s;
+  }
+
+  // Coralis LOT: 6-10 chars, starts with 2 digits, has letters AND digits.
+  // Examples: 10BFCP02, 20BFAEC4, 21AB1234
+  function isCoralisLot(s) {
+    if (!s) return false;
+    if (s.length < 6 || s.length > 10) return false;
+    if (!/^\d{2}/.test(s)) return false;
     if (!/[A-Z]/.test(s)) return false;
-    if (!/[0-9]/.test(s)) return false;
-    // Exclude things that look like dates
-    if (/^\d{4}-?\d{2}-?\d{2}$/.test(s)) return false;
+    // Must have at least 2 letters total to avoid catching plain numbers/dates.
+    if ((s.match(/[A-Z]/g) || []).length < 2) return false;
+    // Exclude date-like
+    if (/^\d{6,8}$/.test(s)) return false;
     return true;
   }
 
@@ -688,11 +751,19 @@
     };
   }
 
-  function collectWords(data) {
+  function collectAllWords(data) {
     const words = [];
-    (data.words || []).forEach(w => {
-      words.push({ text: w.text, bbox: w.bbox });
-    });
+    const pushWord = (w) => {
+      if (w && w.text && w.bbox) words.push({ text: w.text, bbox: w.bbox });
+    };
+    const walk = (node) => {
+      if (!node) return;
+      if (node.words) node.words.forEach(pushWord);
+      if (node.lines) node.lines.forEach(walk);
+      if (node.paragraphs) node.paragraphs.forEach(walk);
+      if (node.blocks) node.blocks.forEach(walk);
+    };
+    walk(data);
     return words;
   }
 
