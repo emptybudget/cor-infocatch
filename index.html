@@ -254,12 +254,39 @@
     padding: 16px;
     margin-bottom: 12px;
     border: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 14px;
+    align-items: start;
   }
 
   .sticker-card h3 {
-    margin: 0 0 12px;
+    margin: 0 0 10px;
     font-size: 15px;
     color: var(--primary);
+    grid-column: 2;
+  }
+
+  .sticker-card .thumb {
+    grid-row: 1 / span 3;
+    width: 120px;
+    height: 120px;
+    border-radius: 8px;
+    background: #f3f4f6;
+    object-fit: cover;
+    border: 1px solid var(--border);
+  }
+
+  .sticker-card .fields {
+    grid-column: 2;
+  }
+
+  @media (max-width: 480px) {
+    .sticker-card {
+      grid-template-columns: 80px 1fr;
+      gap: 10px;
+    }
+    .sticker-card .thumb { width: 80px; height: 80px; }
   }
 
   .field-row {
@@ -423,6 +450,7 @@
   const rawText = document.getElementById('rawText');
 
   let currentFile = null;
+  let ocrCanvas = null; // canvas used for OCR; reused for crop thumbnails
 
   // ===== Upload & Preview =====
   dropzone.addEventListener('click', () => fileInput.click());
@@ -484,6 +512,7 @@
 
   resetBtn.addEventListener('click', () => {
     currentFile = null;
+    ocrCanvas = null;
     fileInput.value = '';
     previewSection.classList.remove('visible');
     results.innerHTML = '';
@@ -506,32 +535,36 @@
     loadingText.textContent = 'OCR 엔진 초기화 중...';
 
     try {
-      const ocrInput = await preprocessImage(file);
+      ocrCanvas = await preprocessImage(file);
 
+      let passIdx = 0;
+      const PASSES = 2;
       const worker = await Tesseract.createWorker('eng', 1, {
         logger: (m) => {
           if (m.status === 'recognizing text') {
-            const pct = Math.round(m.progress * 100);
+            const pct = Math.round(((passIdx + m.progress) / PASSES) * 100);
             progressFill.style.width = pct + '%';
-            loadingText.textContent = `텍스트 분석 중... ${pct}%`;
+            loadingText.textContent = `텍스트 분석 중... ${pct}% (${passIdx + 1}/${PASSES})`;
           } else if (m.status) {
             loadingText.textContent = translateStatus(m.status);
           }
         }
       });
 
-      // PSM 11 = sparse text: find as much text as possible regardless of layout.
-      // Best fit for photos containing multiple separated stickers.
-      await worker.setParameters({
-        tessedit_pageseg_mode: '11'
-      });
+      // Pass 1: PSM 11 (sparse text) — best for scattered stickers.
+      await worker.setParameters({ tessedit_pageseg_mode: '11' });
+      const r1 = await worker.recognize(ocrCanvas);
+      passIdx = 1;
 
-      const { data } = await worker.recognize(ocrInput);
+      // Pass 2: PSM 6 (uniform block) — catches words PSM 11 misses.
+      await worker.setParameters({ tessedit_pageseg_mode: '6' });
+      const r2 = await worker.recognize(ocrCanvas);
+
       await worker.terminate();
 
-      const stickers = extractStickers(data);
+      const stickers = extractStickers([r1.data, r2.data]);
       renderResults(stickers);
-      rawText.textContent = data.text;
+      rawText.textContent = '[PSM 11]\n' + r1.data.text + '\n\n[PSM 6]\n' + r2.data.text;
       rawTextToggle.style.display = 'block';
     } catch (err) {
       console.error(err);
@@ -543,11 +576,11 @@
     }
   }
 
-  // Upscale small images so small label text becomes legible to Tesseract.
-  // Returns a canvas (Tesseract accepts HTMLCanvasElement).
+  // Upscale + grayscale + light contrast boost. Tesseract is much more
+  // accurate on large, high-contrast text.
   async function preprocessImage(file) {
     const img = await loadImage(file);
-    const TARGET_LONG_SIDE = 2400;
+    const TARGET_LONG_SIDE = 3000;
     const longSide = Math.max(img.naturalWidth, img.naturalHeight);
     const scale = longSide < TARGET_LONG_SIDE ? TARGET_LONG_SIDE / longSide : 1;
     const w = Math.round(img.naturalWidth * scale);
@@ -559,6 +592,18 @@
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, 0, 0, w, h);
+
+    // Grayscale + linear contrast stretch
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const d = imageData.data;
+    const CONTRAST = 1.4;
+    const MID = 128;
+    for (let i = 0; i < d.length; i += 4) {
+      const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      const c = Math.max(0, Math.min(255, (g - MID) * CONTRAST + MID));
+      d[i] = d[i + 1] = d[i + 2] = c;
+    }
+    ctx.putImageData(imageData, 0, 0);
     return canvas;
   }
 
@@ -590,9 +635,14 @@
   // spatially nearest date(s) and choose the future-most as the expiration.
   const MAX_STICKERS = 10;
 
-  function extractStickers(data) {
-    const words = collectAllWords(data);
-    const lines = collectLines(data);
+  function extractStickers(dataArr) {
+    const datas = Array.isArray(dataArr) ? dataArr : [dataArr];
+    const words = [];
+    const lines = [];
+    datas.forEach(d => {
+      words.push(...collectAllWords(d));
+      lines.push(...collectLines(d));
+    });
 
     // ---- Find LOT candidates ----
     const lotCandidates = []; // { value, bbox }
@@ -696,13 +746,28 @@
         );
         expiration = nearby[0];
       }
+      const cropBox = computeCropBox(lot.bbox, expiration ? expiration.bbox : null);
       return {
         lot: lot.value,
-        expiration: expiration ? expiration.yyyymmdd : ''
+        expiration: expiration ? expiration.yyyymmdd : '',
+        cropBox
       };
     });
 
     return stickers.slice(0, MAX_STICKERS);
+  }
+
+  // Build a crop region around the LOT (and expiration if available),
+  // padded outward to capture the surrounding sticker context.
+  function computeCropBox(lotBbox, expBbox) {
+    let x0 = lotBbox.x0, y0 = lotBbox.y0, x1 = lotBbox.x1, y1 = lotBbox.y1;
+    if (expBbox && expBbox.x1 > expBbox.x0) {
+      x0 = Math.min(x0, expBbox.x0);
+      y0 = Math.min(y0, expBbox.y0);
+      x1 = Math.max(x1, expBbox.x1);
+      y1 = Math.max(y1, expBbox.y1);
+    }
+    return { x0, y0, x1, y1 };
   }
 
   function addDate(arr, m, bbox) {
@@ -805,21 +870,29 @@
         <span class="results-count">${stickers.length}개 스티커</span>
       </div>`;
 
-    const cards = stickers.map((s, i) => `
-      <div class="sticker-card" data-idx="${i}">
-        <h3>스티커 #${i + 1}</h3>
-        <div class="field-row">
-          <span class="field-label">LOT</span>
-          <input class="field-input" data-field="lot" value="${escapeHtml(s.lot)}" />
-          <button class="btn btn-sm" data-copy="lot">복사</button>
-        </div>
-        <div class="field-row">
-          <span class="field-label">유효기간</span>
-          <input class="field-input" data-field="exp" value="${escapeHtml(s.expiration)}" placeholder="YYYYMMDD" />
-          <button class="btn btn-sm" data-copy="exp">복사</button>
-        </div>
-      </div>
-    `).join('');
+    const cards = stickers.map((s, i) => {
+      const thumb = makeCropThumbnail(s.cropBox);
+      const thumbHtml = thumb
+        ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
+        : `<div class="thumb"></div>`;
+      return `
+        <div class="sticker-card" data-idx="${i}">
+          ${thumbHtml}
+          <h3>스티커 #${i + 1}</h3>
+          <div class="fields">
+            <div class="field-row">
+              <span class="field-label">LOT</span>
+              <input class="field-input" data-field="lot" value="${escapeHtml(s.lot)}" />
+              <button class="btn btn-sm" data-copy="lot">복사</button>
+            </div>
+            <div class="field-row">
+              <span class="field-label">유효기간</span>
+              <input class="field-input" data-field="exp" value="${escapeHtml(s.expiration)}" placeholder="YYYYMMDD" />
+              <button class="btn btn-sm" data-copy="exp">복사</button>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
 
     results.innerHTML = header + cards;
 
@@ -837,6 +910,47 @@
         });
       });
     });
+  }
+
+  // Crop a region around the LOT (+ date) bbox from the OCR canvas
+  // and return a data URL. Padding is generous so the surrounding
+  // sticker context is visible.
+  function makeCropThumbnail(box) {
+    if (!ocrCanvas || !box || box.x1 <= box.x0 || box.y1 <= box.y0) return null;
+    const W = ocrCanvas.width, H = ocrCanvas.height;
+    const bw = box.x1 - box.x0;
+    const bh = box.y1 - box.y0;
+
+    // Pad outward: ~2.5x the box's larger dimension, but at least 8% of canvas.
+    const padBase = Math.max(bw, bh) * 1.8;
+    const padFloor = Math.min(W, H) * 0.08;
+    const pad = Math.max(padBase, padFloor);
+
+    let cx = (box.x0 + box.x1) / 2;
+    let cy = (box.y0 + box.y1) / 2;
+    // Make it roughly square, sized to fit the sticker
+    const side = Math.max(bw, bh) + pad * 2;
+    let sx = Math.max(0, cx - side / 2);
+    let sy = Math.max(0, cy - side / 2);
+    let sw = Math.min(side, W - sx);
+    let sh = Math.min(side, H - sy);
+    // Push back from right/bottom edges if clipped
+    if (sx + sw > W) sx = W - sw;
+    if (sy + sh > H) sy = H - sh;
+
+    const out = document.createElement('canvas');
+    const SIZE = 240;
+    out.width = SIZE;
+    out.height = SIZE;
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    ctx.drawImage(ocrCanvas, sx, sy, sw, sh, 0, 0, SIZE, SIZE);
+    try {
+      return out.toDataURL('image/jpeg', 0.85);
+    } catch (e) {
+      return null;
+    }
   }
 
   function escapeHtml(s) {
