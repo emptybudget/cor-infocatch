@@ -274,6 +274,19 @@
     margin-left: 6px;
   }
 
+  .sticker-card .warn-badge {
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 11px;
+    color: #b45309;
+    background: #fef3c7;
+    border: 1px solid #fcd34d;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-weight: 500;
+    vertical-align: middle;
+  }
+
   .sticker-card .thumb {
     grid-row: 1 / span 3;
     width: 220px;
@@ -698,25 +711,98 @@
   // spatially nearest date(s) and choose the future-most as the expiration.
   const MAX_STICKERS = 10;
 
-  // Desired product order. Each entry has a display label + a detector
-  // applied against a normalized word (lowercase, alpha-only).
-  const PRODUCT_ORDER = [
-    { label: 'Stem',          test: t => t === 'stem' },
-    { label: 'Tray',          test: t => t === 'tray' },
-    { label: 'Liner',         test: t => t === 'liner' },
-    { label: 'Glenosphere',   test: t => t.includes('glenosphere') },
-    { label: 'Baseplate',     test: t => t.includes('baseplate') || t.includes('baseplale') },
-    { label: 'Central Screw', test: t => t.startsWith('central') },
-    { label: 'Locking Screw', test: t => t.startsWith('locking') }
-  ];
+  // ---- GTIN → product database (from Coralis raw data) ----
+  // The (01)xxxxxxxxxxxxxx GS1 code uniquely identifies the product.
+  // Far more reliable than keyword matching against blurry OCR text.
+  const GTIN_DB = {
+    '08800017265490': 'Total Shoulder Humeral Head 42, 18mm',
+    '08800017265506': 'Humeral Head 42*21mm',
+    '08800017265681': 'Humeral Head 46*18mm',
+    '08800017265698': 'Humeral Head 46*21mm',
+    '08800017265773': 'Humeral Stem 6mm',
+    '08800017265780': 'Humeral Stem 8mm',
+    '08800017265797': 'Humeral Stem 10mm',
+    '08800017265803': 'Humeral Stem 12mm',
+    '08800017265810': 'Humeral Stem 14mm',
+    '08800017265995': 'Pegged Glenoid 44mm',
+    '08800017266008': 'Pegged Glenoid 48mm',
+    '08800017266015': 'Pegged Glenoid 52mm',
+    '08800017267791': 'Humeral Stem 7mm',
+    '08800017267807': 'Humeral Stem 9mm',
+    '08800017267814': 'Humeral Stem 11mm',
+    '08800017267821': 'Humeral Stem 13mm',
+    '08800017267852': 'Glenosphere Head 36 +0 (CENTRIC)',
+    '08800017267869': 'Glenosphere Head 36 +4 (CENTRIC)',
+    '08800017267876': 'Glenosphere Head 36 +0/+4 (ECCENTRIC)',
+    '08800017267937': 'Glenoid Baseplate 26mm',
+    '08800017267944': 'Glenoid Baseplate 28mm',
+    '08800017267951': '6.5mm Modular Central Screw 26mm',
+    '08800017267968': '6.5mm Modular Central Screw 30mm',
+    '08800017267975': '4.5mm Locking Screw 34mm',
+    '08800017267982': '6.5mm Modular Central Screw 38mm',
+    '08800017268002': '4.5mm Locking Screw 14mm',
+    '08800017268019': '4.5mm Locking Screw 18mm',
+    '08800017268026': '4.5mm Locking Screw 22mm',
+    '08800017268033': '4.5mm Locking Screw 26mm',
+    '08800017268040': '4.5mm Locking Screw 30mm',
+    '08800017268057': '4.5mm Locking Screw 34mm',
+    '08800017268064': '4.5mm Locking Screw 38mm',
+    '08800017268095': '4.5mm Non-Locking Screw 18mm',
+    '08800017268101': '4.5mm Non-Locking Screw 22mm',
+    '08800017268118': '4.5mm Non-Locking Screw 26mm',
+    '08800017268132': '4.5mm Non-Locking Screw 34mm',
+    '08800017269573': 'Humeral Cup Centric +8mm',
+    '08800017269580': 'Humeral Cup Medial Offset 3mm',
+    '08800017269597': 'Humeral Insert 36mm Std',
+    '08800017269603': 'Humeral Insert 36mm +3 Std',
+    '08800017269610': 'Humeral Insert 36mm +6 Std',
+    '08800017269627': 'Humeral Insert 36mm +9 Std',
+    '08800017269702': 'Humeral Spacer Assembly Centric +8mm',
+    '08800017269719': 'Humeral Spacer Assembly Ecc +8mm',
+    '08800068900777': '6.5mm Modular Central Screw 18mm',
+    '08800068900791': '6.5mm Modular Central Screw 22mm',
+    '08800068901682': 'Humeral Cup Medial Offset 6mm',
+    '08800068901705': 'Humeral Spacer Assembly Ecc +6mm',
+    '08800068905796': 'Glenoid Baseplate 10° 26mm 9mm',
+    '08800068905918': 'Glenoid Augment Baseplate 26mm +9mm',
+    '08800068908636': 'Humeral Short Stem 14mm',
+    '08800068908643': 'Humeral Short Stem 13mm',
+    '08800068908650': 'Humeral Short Stem 12mm',
+    '08800068908667': 'Humeral Short Stem 11mm',
+    '08800068908674': 'Humeral Short Stem 9mm',
+    '08800068908681': 'Humeral Short Stem 8mm',
+    '08800068908698': 'Humeral Short Stem 7mm',
+    '08800068908704': 'Humeral Short Stem 6mm',
+    '08800068908728': 'Humeral Short Stem 10mm'
+  };
 
-  function detectProductOrder(rawToken) {
-    const t = String(rawToken || '').toLowerCase().replace(/[^a-z]/g, '');
-    if (!t) return -1;
-    for (let i = 0; i < PRODUCT_ORDER.length; i++) {
-      if (PRODUCT_ORDER[i].test(t)) return i;
-    }
+  // Category order requested by user. The matcher receives the
+  // product name from GTIN_DB (or OCR fallback) and returns the index.
+  const CATEGORY_ORDER = ['Stem', 'Tray', 'Liner', 'Glenosphere', 'Baseplate', 'Central Screw', 'Locking Screw'];
+
+  function categorize(productName) {
+    if (!productName) return -1;
+    const n = productName.toLowerCase();
+    if (n.includes('stem')) return 0;
+    if (n.includes('tray') || n.includes('humeral cup')) return 1;
+    if (n.includes('insert') || n.includes('liner')) return 2;
+    if (n.includes('glenosphere') || n.includes('gienosphere')) return 3;
+    if (n.includes('baseplate')) return 4;
+    if (n.includes('central screw')) return 5;
+    // Locking Screw — must NOT match "Non-Locking"
+    if (/(^|[^-])locking screw/.test(n)) return 5 + 1;
     return -1;
+  }
+
+  // Detect the dimension portion of a product name for the spec field.
+  // Falls back to nearest mm-token from OCR if name has no clear size.
+  function extractSpecFromName(name) {
+    if (!name) return '';
+    // Try common patterns: "9mm", "26mm", "+8mm", "26mm +9mm" — keep the
+    // first informative spec chunk after any descriptor.
+    const m = name.match(/\b(\d{1,3}(?:\.\d+)?\s*(?:[*x]\s*\d{1,3})?\s*mm[+\d ]*)/i);
+    if (m) return m[1].trim().replace(/\s+/g, '');
+    return '';
   }
 
   function extractStickers(dataArr) {
@@ -731,25 +817,26 @@
     // ---- Find LOT candidates ----
     const lotCandidates = []; // { value, bbox }
 
-    // (a) "LOT" prefix on any word (tolerant of OCR errors like L0T)
+    // (a) "LOT" prefix on any word (tolerant of OCR errors like L0T).
+    // After an explicit LOT label we trust whatever alphanumeric token
+    // follows, even if it doesn't match the strict Coralis pattern.
     const lotLabelRe = /^L[O0]T:?$/i;
     words.forEach((w, i) => {
       const t = (w.text || '').trim();
       if (lotLabelRe.test(t)) {
-        // Look at the next 1-3 words for the value.
         for (let j = i + 1; j < Math.min(i + 4, words.length); j++) {
           const cand = normalizeLotToken(words[j].text);
-          if (cand && isCoralisLot(cand)) {
+          if (cand && cand.length >= 4 && /[A-Z]/.test(cand) && /[0-9]/.test(cand)) {
             lotCandidates.push({ value: cand, bbox: words[j].bbox });
             break;
           }
         }
       }
       // Inline form: LOT10BFCP02 / LOT:10BFCP02
-      const inline = t.match(/^L[O0]T[:\s]*([A-Z0-9]{5,12})$/i);
+      const inline = t.match(/^L[O0]T[:\s]*([A-Z0-9]{4,14})$/i);
       if (inline) {
         const cand = normalizeLotToken(inline[1]);
-        if (cand && isCoralisLot(cand)) {
+        if (cand && /[A-Z]/.test(cand) && /[0-9]/.test(cand)) {
           lotCandidates.push({ value: cand, bbox: w.bbox });
         }
       }
@@ -767,10 +854,10 @@
     // Also scan raw line text for LOT prefix forms (in case word splitting missed them)
     lines.forEach(line => {
       const lineText = line.text || '';
-      const matches = [...lineText.matchAll(/L[O0]T[:\s]*([A-Z0-9]{5,12})/gi)];
+      const matches = [...lineText.matchAll(/L[O0]T[:\s]*([A-Z0-9]{4,14})/gi)];
       matches.forEach(m => {
         const cand = normalizeLotToken(m[1]);
-        if (cand && isCoralisLot(cand)) {
+        if (cand && /[A-Z]/.test(cand) && /[0-9]/.test(cand)) {
           lotCandidates.push({ value: cand, bbox: line.bbox });
         }
       });
@@ -812,26 +899,41 @@
       return true;
     });
 
-    // ---- Find product keyword hits (with bbox) ----
-    const productHits = [];
-    words.forEach(w => {
-      const idx = detectProductOrder(w.text);
-      if (idx >= 0) productHits.push({ orderIdx: idx, bbox: w.bbox });
-    });
-
-    // ---- Find dimension hits (e.g. "9mm", "26mm") ----
-    // Scan both individual words and line text so we catch values where
-    // the number and "mm" got split into separate tokens.
-    const dimHits = []; // { value: "9mm", bbox }
-    const dimRe = /\b(\d{1,3}(?:\.\d{1,2})?)\s*mm\b/gi;
+    // ---- Find GTIN hits: (01)<14 digits> ----
+    // Tesseract may break it into pieces, so scan over both word tokens
+    // (which can contain the whole "(01)08800...") and over the line text.
+    const gtinHits = []; // { code, name, bbox }
+    const tryAddGtin = (code, bbox) => {
+      if (!code) return;
+      const c = code.replace(/\D/g, '');
+      if (c.length !== 14) return;
+      const name = GTIN_DB[c];
+      if (!name) return; // unknown code → skip
+      gtinHits.push({ code: c, name, bbox });
+    };
+    const gtinRe = /\(?\s*0?1\s*\)?[\s\-]*((?:\d[\s\-]*){14})/g;
     words.forEach(w => {
       const t = (w.text || '');
-      const m = t.match(/^(\d{1,3}(?:\.\d{1,2})?)mm$/i);
-      if (m) dimHits.push({ value: `${m[1]}mm`, bbox: w.bbox });
+      const matches = [...t.matchAll(gtinRe)];
+      matches.forEach(m => tryAddGtin(m[1], w.bbox));
     });
     lines.forEach(line => {
       const t = line.text || '';
-      const matches = [...t.matchAll(dimRe)];
+      const matches = [...t.matchAll(gtinRe)];
+      matches.forEach(m => tryAddGtin(m[1], line.bbox));
+    });
+    // Fallback: any 14-digit chunk starting with the Corentec prefix 0880
+    const fallbackRe = /\b(0880\d{10})\b/g;
+    lines.forEach(line => {
+      const matches = [...(line.text || '').matchAll(fallbackRe)];
+      matches.forEach(m => tryAddGtin(m[1], line.bbox));
+    });
+
+    // ---- Find loose dimension hits (fallback when GTIN missed) ----
+    const dimHits = []; // { value, bbox }
+    const dimRe = /\b(\d{1,3}(?:\.\d{1,2})?)\s*mm\b/gi;
+    lines.forEach(line => {
+      const matches = [...(line.text || '').matchAll(dimRe)];
       matches.forEach(m => {
         dimHits.push({ value: `${m[1]}mm`, bbox: line.bbox });
       });
@@ -857,23 +959,21 @@
       }
       const cropBox = computeCropBox(lot.bbox, expiration ? expiration.bbox : null);
 
-      // Nearest product keyword → product label & sort key
-      let productOrderIdx = Number.POSITIVE_INFINITY;
-      let productLabel = '';
-      if (productHits.length) {
-        const scoredProds = productHits.map(p => ({
-          ...p,
-          dist: Math.hypot(bboxCenter(p.bbox).x - lotCenter.x, bboxCenter(p.bbox).y - lotCenter.y)
+      // Primary: nearest GTIN → look up full product name from DB
+      let productName = '';
+      let spec = '';
+      if (gtinHits.length) {
+        const scored = gtinHits.map(g => ({
+          ...g,
+          dist: Math.hypot(bboxCenter(g.bbox).x - lotCenter.x, bboxCenter(g.bbox).y - lotCenter.y)
         }));
-        scoredProds.sort((a, b) => a.dist - b.dist);
-        const nearest = scoredProds[0];
-        productOrderIdx = nearest.orderIdx;
-        productLabel = PRODUCT_ORDER[nearest.orderIdx].label;
+        scored.sort((a, b) => a.dist - b.dist);
+        productName = scored[0].name;
+        spec = extractSpecFromName(productName);
       }
 
-      // Nearest dimension → spec (e.g. "9mm")
-      let spec = '';
-      if (dimHits.length) {
+      // Fallback: scan nearby dimension if name yielded none
+      if (!spec && dimHits.length) {
         const scoredDims = dimHits.map(p => ({
           ...p,
           dist: Math.hypot(bboxCenter(p.bbox).x - lotCenter.x, bboxCenter(p.bbox).y - lotCenter.y)
@@ -882,19 +982,23 @@
         spec = scoredDims[0].value;
       }
 
+      const categoryIdx = categorize(productName);
+      const recognized = categoryIdx >= 0;
+
       return {
         lot: lot.value,
         expiration: expiration ? expiration.yyyymmdd : '',
         cropBox,
-        productLabel,
+        productName,
         spec,
-        productOrderIdx
+        categoryIdx,
+        recognized,
+        sortKey: recognized ? categoryIdx : Number.POSITIVE_INFINITY
       };
     });
 
-    // Sort by product order; unknowns at the end. Preserve original order
-    // within the same product bucket via stable sort.
-    stickers.sort((a, b) => a.productOrderIdx - b.productOrderIdx);
+    // Sort: recognized stickers by category order, unrecognized last.
+    stickers.sort((a, b) => a.sortKey - b.sortKey);
 
     return stickers.slice(0, MAX_STICKERS);
   }
@@ -1018,14 +1122,16 @@
       const thumbHtml = thumb
         ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
         : `<div class="thumb"></div>`;
-      const productText = [s.productLabel, s.spec].filter(Boolean).join(' ');
-      const productHtml = productText
-        ? `<span class="product-name">${escapeHtml(productText)}</span>`
+      const productHtml = s.productName
+        ? `<span class="product-name">${escapeHtml(s.productName)}</span>`
+        : '';
+      const warnHtml = !s.recognized
+        ? `<span class="warn-badge" title="제품 분류 미확인 — 직접 확인해 주세요">⚠ 체크 필요</span>`
         : '';
       return `
         <div class="sticker-card" data-idx="${i}">
           ${thumbHtml}
-          <h3>스티커 #${i + 1}${productHtml}</h3>
+          <h3>스티커 #${i + 1}${productHtml}${warnHtml}</h3>
           <div class="fields">
             <div class="field-row">
               <span class="field-label">LOT</span>
