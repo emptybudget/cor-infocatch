@@ -881,12 +881,15 @@
       });
     });
 
-    // Deduplicate (keep first-seen bbox)
-    const seen = new Map();
-    lotCandidates.forEach(l => {
-      if (!seen.has(l.value)) seen.set(l.value, l);
-    });
-    const uniqueLots = [...seen.values()];
+    // Dedupe: merge only when LOTs are BOTH spatially close AND
+    // textually identical-or-1-char-different. This preserves the
+    // legitimate case of the same locking screw appearing twice in
+    // one photo while still collapsing OCR pass duplicates / misreads.
+    const uniqueLots = [];
+    for (const cand of lotCandidates) {
+      const dup = uniqueLots.find(u => nearbyBbox(cand.bbox, u.bbox) && similarLotValue(cand.value, u.value));
+      if (!dup) uniqueLots.push(cand);
+    }
 
     // ---- Find date candidates ----
     const dates = []; // { year, month, day, yyyymmdd, bbox }
@@ -1030,13 +1033,35 @@
     });
   }
 
-  // Normalize a token to uppercase alphanumeric; common OCR confusions
-  // (lowercase o/i/l) are mapped to digits when surrounded by digits.
+  // Normalize a token to uppercase alphanumeric. Coralis LOTs never use
+  // the letter O — only digit 0 — so any O is treated as a misread 0.
   function normalizeLotToken(raw) {
     if (!raw) return null;
-    const s = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const s = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/O/g, '0');
     if (s.length < 5 || s.length > 12) return null;
     return s;
+  }
+
+  // Two bboxes are "near" if their centers sit within ~5 LOT heights.
+  function nearbyBbox(a, b) {
+    const ah = Math.max(1, a.y1 - a.y0);
+    const bh = Math.max(1, b.y1 - b.y0);
+    const scale = Math.max(ah, bh);
+    const acx = (a.x0 + a.x1) / 2, acy = (a.y0 + a.y1) / 2;
+    const bcx = (b.x0 + b.x1) / 2, bcy = (b.y0 + b.y1) / 2;
+    return Math.hypot(acx - bcx, acy - bcy) < scale * 5;
+  }
+
+  // Same string, or exactly one char different at the same position
+  // (typical single-glyph OCR misread like B↔8, S↔5).
+  function similarLotValue(a, b) {
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    let diffs = 0;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i] && ++diffs > 1) return false;
+    }
+    return diffs === 1;
   }
 
   // Coralis LOT: 6-10 chars, starts with 2 digits, has letters AND digits.
