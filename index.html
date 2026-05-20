@@ -768,7 +768,7 @@
   //   - Skip the boilerplate "Coralis Reverse Shoulder System" header
   //   - Stop at the first Material/REF/LOT marker
   //   - Dedupe by normalized text and cap at 4 lines
-  function extractNameForLot(lot, kwAnchor, lines) {
+  function extractNameForLot(lot, kwAnchor, lines, lotValue) {
     if (!kwAnchor) return '';
     const lotH = Math.max(1, lot.bbox.y1 - lot.bbox.y0);
     const yTop = kwAnchor.bbox.y0 - lotH * 0.3;
@@ -790,17 +790,33 @@
     });
     candidates.sort((a, b) => a.bbox.y0 - b.bbox.y0);
 
+    // Stop when we reach Material / REF / LOT or the things that
+    // typically follow them, even when OCR drops the prefix label.
     const stopRe = /^\s*(material|ref\b|lot\b)/i;
+    const materialRe = /\b(ti[\d6gb]?[a4]l\d?v|cocrmo|alloy|\beli\b)/i;
+    const dateRe = /\d{4}[-.\s/]?\d{2}[-.\s/]?\d{2}/;
+    const refRe = /^\s*[©c]\s*\d[\s.]/i;
+    const lotValRe = lotValue ? new RegExp('\\b' + lotValue.replace(/[^A-Z0-9]/g, '') + '\\b') : null;
+
+    const shouldStop = (t) => {
+      if (stopRe.test(t)) return true;
+      if (materialRe.test(t)) return true;
+      if (dateRe.test(t)) return true;
+      if (refRe.test(t)) return true;
+      if (lotValRe && lotValRe.test(t.toUpperCase().replace(/[^A-Z0-9]/g, ''))) return true;
+      return false;
+    };
+
     const seen = new Set();
     const nameLines = [];
     for (const l of candidates) {
       const t = l.text.trim();
-      if (stopRe.test(t)) break;
+      if (shouldStop(t)) break;
       const norm = t.toLowerCase().replace(/[^a-z0-9]/g, '');
       if (!norm || seen.has(norm)) continue;
       seen.add(norm);
       nameLines.push(t);
-      if (nameLines.length >= 4) break;
+      if (nameLines.length >= 8) break;
     }
     return nameLines.join(' ').replace(/\s+/g, ' ').trim();
   }
@@ -913,7 +929,7 @@
     // Also detect compound phrases at line level (e.g. "Central Screw", "Locking Screw")
     lines.forEach(line => {
       const t = (line.text || '').toLowerCase();
-      const compoundRe = /(central\s+screw|locking\s+screw|glenoid\s+baseplate|baseplate|glenosphere|gienosphere|humeral\s+(stem|insert|cup)|short\s+stem)/g;
+      const compoundRe = /(central\s+screw|locking\s+screw|glenoid\s+baseplate|baseplate|glenosphere|gienosphere|humeral\s+(stem|insert|cup|tray)|short\s+stem)/g;
       const matches = [...t.matchAll(compoundRe)];
       matches.forEach(m => {
         const phrase = m[1];
@@ -955,13 +971,17 @@
         return scored[0];
       };
 
-      const kwPick = nearest(productHits);
+      // Keyword anchor restricted to those above the LOT — we use it to
+      // bound the name search vertically. (Below-LOT keywords would
+      // belong to a neighboring sticker.)
+      const productHitsAbove = productHits.filter(p => p.bbox.y0 < lot.bbox.y0);
+      const kwPick = nearest(productHitsAbove) || nearest(productHits);
       const categoryIdx = kwPick ? kwPick.categoryIdx : -1;
 
       // Name = lines between the category keyword and the LOT, excluding
       // the Material/REF/LOT marker lines themselves. Falls back to the
       // category label if no anchor line is found.
-      const nameFromLines = extractNameForLot(lot, kwPick, lines);
+      const nameFromLines = extractNameForLot(lot, kwPick, lines, lot.value);
       const productName = nameFromLines || (categoryIdx >= 0 ? CATEGORY_LABEL[categoryIdx] : '');
 
       const recognized = categoryIdx >= 0;
