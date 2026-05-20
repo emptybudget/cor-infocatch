@@ -255,8 +255,8 @@
     margin-bottom: 12px;
     border: 1px solid var(--border);
     display: grid;
-    grid-template-columns: 120px 1fr;
-    gap: 14px;
+    grid-template-columns: 220px 1fr;
+    gap: 16px;
     align-items: start;
   }
 
@@ -267,26 +267,34 @@
     grid-column: 2;
   }
 
+  .sticker-card .product-name {
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 400;
+    margin-left: 6px;
+  }
+
   .sticker-card .thumb {
     grid-row: 1 / span 3;
-    width: 120px;
-    height: 120px;
+    width: 220px;
+    height: 220px;
     border-radius: 8px;
     background: #f3f4f6;
     object-fit: cover;
     border: 1px solid var(--border);
+    image-rendering: -webkit-optimize-contrast;
   }
 
   .sticker-card .fields {
     grid-column: 2;
   }
 
-  @media (max-width: 480px) {
+  @media (max-width: 600px) {
     .sticker-card {
-      grid-template-columns: 80px 1fr;
-      gap: 10px;
+      grid-template-columns: 140px 1fr;
+      gap: 12px;
     }
-    .sticker-card .thumb { width: 80px; height: 80px; }
+    .sticker-card .thumb { width: 140px; height: 140px; }
   }
 
   .field-row {
@@ -635,6 +643,27 @@
   // spatially nearest date(s) and choose the future-most as the expiration.
   const MAX_STICKERS = 10;
 
+  // Desired product order. Each entry has a display label + a detector
+  // applied against a normalized word (lowercase, alpha-only).
+  const PRODUCT_ORDER = [
+    { label: 'Stem',          test: t => t === 'stem' },
+    { label: 'Tray',          test: t => t === 'tray' },
+    { label: 'Liner',         test: t => t === 'liner' },
+    { label: 'Glenosphere',   test: t => t.includes('glenosphere') },
+    { label: 'Baseplate',     test: t => t.includes('baseplate') || t.includes('baseplale') },
+    { label: 'Central Screw', test: t => t.startsWith('central') },
+    { label: 'Locking Screw', test: t => t.startsWith('locking') }
+  ];
+
+  function detectProductOrder(rawToken) {
+    const t = String(rawToken || '').toLowerCase().replace(/[^a-z]/g, '');
+    if (!t) return -1;
+    for (let i = 0; i < PRODUCT_ORDER.length; i++) {
+      if (PRODUCT_ORDER[i].test(t)) return i;
+    }
+    return -1;
+  }
+
   function extractStickers(dataArr) {
     const datas = Array.isArray(dataArr) ? dataArr : [dataArr];
     const words = [];
@@ -728,6 +757,13 @@
       return true;
     });
 
+    // ---- Find product keyword hits (with bbox) ----
+    const productHits = [];
+    words.forEach(w => {
+      const idx = detectProductOrder(w.text);
+      if (idx >= 0) productHits.push({ orderIdx: idx, bbox: w.bbox });
+    });
+
     // ---- Pair each LOT with its expiration ----
     const stickers = uniqueLots.map(lot => {
       const lotCenter = bboxCenter(lot.bbox);
@@ -747,12 +783,33 @@
         expiration = nearby[0];
       }
       const cropBox = computeCropBox(lot.bbox, expiration ? expiration.bbox : null);
+
+      // Nearest product keyword → product label & sort key
+      let productOrderIdx = Number.POSITIVE_INFINITY;
+      let productLabel = '';
+      if (productHits.length) {
+        const scoredProds = productHits.map(p => ({
+          ...p,
+          dist: Math.hypot(bboxCenter(p.bbox).x - lotCenter.x, bboxCenter(p.bbox).y - lotCenter.y)
+        }));
+        scoredProds.sort((a, b) => a.dist - b.dist);
+        const nearest = scoredProds[0];
+        productOrderIdx = nearest.orderIdx;
+        productLabel = PRODUCT_ORDER[nearest.orderIdx].label;
+      }
+
       return {
         lot: lot.value,
         expiration: expiration ? expiration.yyyymmdd : '',
-        cropBox
+        cropBox,
+        productLabel,
+        productOrderIdx
       };
     });
+
+    // Sort by product order; unknowns at the end. Preserve original order
+    // within the same product bucket via stable sort.
+    stickers.sort((a, b) => a.productOrderIdx - b.productOrderIdx);
 
     return stickers.slice(0, MAX_STICKERS);
   }
@@ -875,10 +932,13 @@
       const thumbHtml = thumb
         ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
         : `<div class="thumb"></div>`;
+      const productHtml = s.productLabel
+        ? `<span class="product-name">${escapeHtml(s.productLabel)}</span>`
+        : '';
       return `
         <div class="sticker-card" data-idx="${i}">
           ${thumbHtml}
-          <h3>스티커 #${i + 1}</h3>
+          <h3>스티커 #${i + 1}${productHtml}</h3>
           <div class="fields">
             <div class="field-row">
               <span class="field-label">LOT</span>
@@ -921,33 +981,33 @@
     const bw = box.x1 - box.x0;
     const bh = box.y1 - box.y0;
 
-    // Pad outward: ~2.5x the box's larger dimension, but at least 8% of canvas.
-    const padBase = Math.max(bw, bh) * 1.8;
-    const padFloor = Math.min(W, H) * 0.08;
+    // Tighter crop: just enough padding to keep LOT and date legible.
+    const padBase = Math.max(bw, bh) * 0.6;
+    const padFloor = Math.min(W, H) * 0.03;
     const pad = Math.max(padBase, padFloor);
 
-    let cx = (box.x0 + box.x1) / 2;
-    let cy = (box.y0 + box.y1) / 2;
-    // Make it roughly square, sized to fit the sticker
+    const cx = (box.x0 + box.x1) / 2;
+    const cy = (box.y0 + box.y1) / 2;
     const side = Math.max(bw, bh) + pad * 2;
     let sx = Math.max(0, cx - side / 2);
     let sy = Math.max(0, cy - side / 2);
     let sw = Math.min(side, W - sx);
     let sh = Math.min(side, H - sy);
-    // Push back from right/bottom edges if clipped
     if (sx + sw > W) sx = W - sw;
     if (sy + sh > H) sy = H - sh;
 
     const out = document.createElement('canvas');
-    const SIZE = 240;
+    const SIZE = 480; // hi-DPI render; CSS slot is 220px
     out.width = SIZE;
     out.height = SIZE;
     const ctx = out.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, SIZE, SIZE);
     ctx.drawImage(ocrCanvas, sx, sy, sw, sh, 0, 0, SIZE, SIZE);
     try {
-      return out.toDataURL('image/jpeg', 0.85);
+      return out.toDataURL('image/jpeg', 0.9);
     } catch (e) {
       return null;
     }
