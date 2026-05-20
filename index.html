@@ -162,6 +162,7 @@
     border-radius: 12px;
     box-shadow: var(--shadow);
     padding: 16px;
+    text-align: center;
   }
 
   .preview-card img {
@@ -433,6 +434,64 @@
 
   .sticker-card .thumb.empty:hover { transform: none; }
 
+  .preview-wrap {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    line-height: 0;
+  }
+
+  .roi-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    cursor: crosshair;
+    z-index: 2;
+  }
+
+  .preview-card.roi-mode .roi-overlay { display: block; }
+  .preview-card.roi-mode img { filter: brightness(0.85); }
+
+  .roi-rect {
+    position: absolute;
+    border: 2px dashed var(--primary);
+    background: rgba(37, 99, 235, 0.15);
+    pointer-events: none;
+  }
+
+  .roi-hint {
+    display: none;
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(37, 99, 235, 0.95);
+    color: #fff;
+    padding: 5px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    z-index: 3;
+    pointer-events: none;
+    line-height: 1.3;
+  }
+
+  .preview-card.roi-mode .roi-hint { display: block; }
+
+  .roi-target-btn {
+    background: transparent;
+    border: 1px solid #fcd34d;
+    color: #b45309;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-left: 6px;
+    vertical-align: middle;
+    font-weight: 500;
+  }
+
+  .roi-target-btn:hover { background: #fef3c7; }
+
   .sticker-card .chooser {
     margin-top: 8px;
     padding-top: 8px;
@@ -599,8 +658,12 @@
       </div>
 
       <div class="preview-section" id="previewSection" style="margin-top:16px;">
-        <div class="preview-card">
-          <img id="previewImg" alt="업로드된 이미지" />
+        <div class="preview-card" id="previewCard">
+          <div class="preview-wrap">
+            <img id="previewImg" alt="업로드된 이미지" />
+            <div class="roi-hint">이미지에서 해당 스티커 영역을 드래그</div>
+            <div class="roi-overlay" id="roiOverlay"></div>
+          </div>
           <div class="actions-row">
             <button class="btn" id="analyzeBtn">OCR 분석 시작</button>
             <button class="btn btn-outline" id="resetBtn">다시 선택</button>
@@ -723,6 +786,7 @@
     previewSection.classList.remove('visible');
     results.innerHTML = '';
     rawTextToggle.style.display = 'none';
+    exitROI();
   });
 
   // ===== OCR =====
@@ -732,6 +796,7 @@
   });
 
   async function runOCR(file) {
+    exitROI();
     loading.classList.add('visible');
     results.innerHTML = '';
     rawTextToggle.style.display = 'none';
@@ -1366,6 +1431,10 @@
       const missingHtml = s.isPlaceholder
         ? `<span class="missing-badge" title="감지되지 않음 — 직접 입력해 주세요">미감지</span>`
         : '';
+      const showRoi = ocrCanvas && (s.isPlaceholder || !s.recognized);
+      const roiBtnHtml = showRoi
+        ? `<button class="roi-target-btn" data-roi-fix="${i}" title="프리뷰에서 영역 드래그">! 영역 지정</button>`
+        : '';
       const cardCls = s.isPlaceholder ? 'sticker-card placeholder' : 'sticker-card';
 
       // For unknown detected stickers, offer to assign them to a category
@@ -1381,7 +1450,7 @@
       return `
         <div class="${cardCls}" data-idx="${i}">
           ${thumbHtml}
-          <h3>스티커 #${i + 1}${productHtml}${warnHtml}${missingHtml}</h3>
+          <h3>스티커 #${i + 1}${productHtml}${warnHtml}${missingHtml}${roiBtnHtml}</h3>
           <div class="fields">
             <div class="field-row">
               <span class="field-label">LOT</span>
@@ -1421,6 +1490,14 @@
             showToast('복사할 값이 없습니다');
           }
         });
+      });
+    });
+
+    // Bind ROI-target buttons: enter drag-to-select mode for that card
+    results.querySelectorAll('[data-roi-fix]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-roi-fix'), 10);
+        startROI(idx);
       });
     });
 
@@ -1480,6 +1557,120 @@
     } catch (e) {
       return null;
     }
+  }
+
+  // ===== ROI re-OCR for error cards =====
+  // When a sticker isn't auto-detected, the user clicks "! 영역 지정"
+  // on the card and drags a rectangle on the preview image. We OCR
+  // just that region and write the result into the target card.
+  const roiOverlay = document.getElementById('roiOverlay');
+  const previewCard = document.getElementById('previewCard');
+  let roiTargetIdx = null;
+  let roiStart = null;
+  let roiRectEl = null;
+
+  function startROI(idx) {
+    if (!ocrCanvas) { showToast('먼저 분석을 실행해 주세요'); return; }
+    roiTargetIdx = idx;
+    previewCard.classList.add('roi-mode');
+    previewCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function exitROI() {
+    roiTargetIdx = null;
+    previewCard.classList.remove('roi-mode');
+    if (roiRectEl) { roiRectEl.remove(); roiRectEl = null; }
+    roiStart = null;
+  }
+
+  roiOverlay.addEventListener('mousedown', (e) => {
+    const r = roiOverlay.getBoundingClientRect();
+    roiStart = { x: e.clientX - r.left, y: e.clientY - r.top };
+    roiRectEl = document.createElement('div');
+    roiRectEl.className = 'roi-rect';
+    Object.assign(roiRectEl.style, {
+      left: roiStart.x + 'px', top: roiStart.y + 'px', width: '0', height: '0'
+    });
+    roiOverlay.appendChild(roiRectEl);
+  });
+
+  roiOverlay.addEventListener('mousemove', (e) => {
+    if (!roiStart || !roiRectEl) return;
+    const r = roiOverlay.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    Object.assign(roiRectEl.style, {
+      left: Math.min(x, roiStart.x) + 'px',
+      top: Math.min(y, roiStart.y) + 'px',
+      width: Math.abs(x - roiStart.x) + 'px',
+      height: Math.abs(y - roiStart.y) + 'px'
+    });
+  });
+
+  roiOverlay.addEventListener('mouseup', async (e) => {
+    if (!roiStart) return;
+    const r = roiOverlay.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    const left = Math.min(x, roiStart.x), top = Math.min(y, roiStart.y);
+    const w = Math.abs(x - roiStart.x), h = Math.abs(y - roiStart.y);
+    roiStart = null;
+    if (w < 15 || h < 15) { exitROI(); return; }
+    const sx = ocrCanvas.width / r.width;
+    const sy = ocrCanvas.height / r.height;
+    const box = {
+      x0: Math.round(left * sx), y0: Math.round(top * sy),
+      x1: Math.round((left + w) * sx), y1: Math.round((top + h) * sy)
+    };
+    await runROIOCR(box);
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && previewCard.classList.contains('roi-mode')) exitROI();
+  });
+
+  async function runROIOCR(box) {
+    showToast('영역 분석 중...');
+    const cw = box.x1 - box.x0, ch = box.y1 - box.y0;
+    if (cw <= 0 || ch <= 0) { exitROI(); return; }
+    const c = document.createElement('canvas');
+    c.width = cw; c.height = ch;
+    c.getContext('2d').drawImage(ocrCanvas, box.x0, box.y0, cw, ch, 0, 0, cw, ch);
+
+    const worker = await Tesseract.createWorker('eng', 1);
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    const { data } = await worker.recognize(c);
+    await worker.terminate();
+
+    const text = data.text || '';
+    const lotM = text.match(/L[O0]T[:\s]*([A-Z0-9]{4,14})/i);
+    const lot = lotM ? lotM[1].toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/O/g, '0') : '';
+
+    const dates = [...text.matchAll(/(\d{4})[-.\s/]?(\d{2})[-.\s/]?(\d{2})/g)]
+      .map(d => ({ y: +d[1], m: +d[2], dd: +d[3] }))
+      .filter(d => d.y >= 2000 && d.y <= 2099 && d.m >= 1 && d.m <= 12 && d.dd >= 1 && d.dd <= 31);
+    dates.sort((a, b) => (b.y*10000+b.m*100+b.dd) - (a.y*10000+a.m*100+a.dd));
+    const expiration = dates[0] ? `${dates[0].y}${pad(dates[0].m)}${pad(dates[0].dd)}` : '';
+
+    if (roiTargetIdx !== null) {
+      const target = currentStickers[roiTargetIdx];
+      if (target) {
+        if (target.isPlaceholder) {
+          const cat = target.categoryIdx;
+          detectedStickers.push({
+            lot, expiration, cropBox: box,
+            productName: CATEGORY_LABEL[cat],
+            categoryIdx: cat, recognized: true,
+            sortKey: cat, isPlaceholder: false
+          });
+        } else {
+          target.lot = lot;
+          target.expiration = expiration;
+          target.cropBox = box;
+        }
+      }
+    }
+    exitROI();
+    applyTemplateAndRender();
+    showToast(lot ? `LOT ${lot} 추가됨` : '추출 실패 — 카드에서 직접 입력');
   }
 
   // ===== Lightbox =====
