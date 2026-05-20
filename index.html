@@ -819,6 +819,24 @@
       if (idx >= 0) productHits.push({ orderIdx: idx, bbox: w.bbox });
     });
 
+    // ---- Find dimension hits (e.g. "9mm", "26mm") ----
+    // Scan both individual words and line text so we catch values where
+    // the number and "mm" got split into separate tokens.
+    const dimHits = []; // { value: "9mm", bbox }
+    const dimRe = /\b(\d{1,3}(?:\.\d{1,2})?)\s*mm\b/gi;
+    words.forEach(w => {
+      const t = (w.text || '');
+      const m = t.match(/^(\d{1,3}(?:\.\d{1,2})?)mm$/i);
+      if (m) dimHits.push({ value: `${m[1]}mm`, bbox: w.bbox });
+    });
+    lines.forEach(line => {
+      const t = line.text || '';
+      const matches = [...t.matchAll(dimRe)];
+      matches.forEach(m => {
+        dimHits.push({ value: `${m[1]}mm`, bbox: line.bbox });
+      });
+    });
+
     // ---- Pair each LOT with its expiration ----
     const stickers = uniqueLots.map(lot => {
       const lotCenter = bboxCenter(lot.bbox);
@@ -853,11 +871,23 @@
         productLabel = PRODUCT_ORDER[nearest.orderIdx].label;
       }
 
+      // Nearest dimension → spec (e.g. "9mm")
+      let spec = '';
+      if (dimHits.length) {
+        const scoredDims = dimHits.map(p => ({
+          ...p,
+          dist: Math.hypot(bboxCenter(p.bbox).x - lotCenter.x, bboxCenter(p.bbox).y - lotCenter.y)
+        }));
+        scoredDims.sort((a, b) => a.dist - b.dist);
+        spec = scoredDims[0].value;
+      }
+
       return {
         lot: lot.value,
         expiration: expiration ? expiration.yyyymmdd : '',
         cropBox,
         productLabel,
+        spec,
         productOrderIdx
       };
     });
@@ -988,8 +1018,9 @@
       const thumbHtml = thumb
         ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
         : `<div class="thumb"></div>`;
-      const productHtml = s.productLabel
-        ? `<span class="product-name">${escapeHtml(s.productLabel)}</span>`
+      const productText = [s.productLabel, s.spec].filter(Boolean).join(' ');
+      const productHtml = productText
+        ? `<span class="product-name">${escapeHtml(productText)}</span>`
         : '';
       return `
         <div class="sticker-card" data-idx="${i}">
