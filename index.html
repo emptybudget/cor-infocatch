@@ -784,14 +784,49 @@
     if (!productName) return -1;
     const n = productName.toLowerCase();
     if (n.includes('stem')) return 0;
-    if (n.includes('tray') || n.includes('humeral cup')) return 1;
+    if (n.includes('tray') || n.includes('humeral cup') || n.includes('cup')) return 1;
     if (n.includes('insert') || n.includes('liner')) return 2;
     if (n.includes('glenosphere') || n.includes('gienosphere')) return 3;
     if (n.includes('baseplate')) return 4;
-    if (n.includes('central screw')) return 5;
+    if (n.includes('central screw') || n.includes('central scr')) return 5;
     // Locking Screw — must NOT match "Non-Locking"
-    if (/(^|[^-])locking screw/.test(n)) return 5 + 1;
+    if (/(^|[^-])locking\s*screw/.test(n)) return 6;
     return -1;
+  }
+
+  // Per-word category detector. Used to find the category from OCR'd
+  // text when no GTIN is visible (GTIN is usually only in the barcode).
+  function categorizeWord(rawToken) {
+    const t = String(rawToken || '').toLowerCase().replace(/[^a-z]/g, '');
+    if (!t) return -1;
+    if (t === 'stem') return 0;
+    if (t === 'cup' || t === 'tray') return 1;
+    if (t === 'insert' || t === 'liner') return 2;
+    if (t.includes('glenosphere') || t.includes('gienosphere')) return 3;
+    if (t.includes('baseplate') || t.includes('baseplale')) return 4;
+    if (t.startsWith('central')) return 5;
+    if (t.startsWith('locking') && !t.startsWith('nonlocking')) return 6;
+    return -1;
+  }
+
+  // Display label per category for fallback when full product name is unknown.
+  const CATEGORY_LABEL = ['Stem', 'Tray (Cup)', 'Liner (Insert)', 'Glenosphere', 'Baseplate', 'Central Screw', 'Locking Screw'];
+
+  // Narrow a line bbox down to the slice of x-range that contains a
+  // substring match — interpolated by character position. Prevents
+  // line-wide bboxes (multiple stickers on one OCR line) from poisoning
+  // crops and spatial matching.
+  function bboxForMatchInLine(line, matchIndex, matchLength) {
+    const text = line.text || '';
+    const len = text.length || 1;
+    const bw = line.bbox.x1 - line.bbox.x0;
+    const padX = Math.max(2, bw / len);
+    return {
+      x0: Math.max(line.bbox.x0, line.bbox.x0 + bw * (matchIndex / len) - padX),
+      y0: line.bbox.y0,
+      x1: Math.min(line.bbox.x1, line.bbox.x0 + bw * ((matchIndex + matchLength) / len) + padX),
+      y1: line.bbox.y1
+    };
   }
 
   // Detect the dimension portion of a product name for the spec field.
@@ -858,7 +893,9 @@
       matches.forEach(m => {
         const cand = normalizeLotToken(m[1]);
         if (cand && /[A-Z]/.test(cand) && /[0-9]/.test(cand)) {
-          lotCandidates.push({ value: cand, bbox: line.bbox });
+          const valueIdx = m.index + m[0].lastIndexOf(m[1]);
+          const tightBbox = bboxForMatchInLine(line, valueIdx, m[1].length);
+          lotCandidates.push({ value: cand, bbox: tightBbox });
         }
       });
     });
@@ -879,7 +916,10 @@
     lines.forEach(line => {
       const t = line.text || '';
       const matches = [...t.matchAll(dateRe)];
-      matches.forEach(m => addDate(dates, m, line.bbox));
+      matches.forEach(m => {
+        const tight = bboxForMatchInLine(line, m.index, m[0].length);
+        addDate(dates, m, tight);
+      });
     });
 
     // Also scan individual words (some PSMs emit dates as a single word)
@@ -929,13 +969,35 @@
       matches.forEach(m => tryAddGtin(m[1], line.bbox));
     });
 
-    // ---- Find loose dimension hits (fallback when GTIN missed) ----
+    // ---- Find product-keyword hits with bboxes (used when GTIN missing) ----
+    const productHits = []; // { categoryIdx, bbox }
+    words.forEach(w => {
+      const cidx = categorizeWord(w.text);
+      if (cidx >= 0) productHits.push({ categoryIdx: cidx, bbox: w.bbox });
+    });
+    // Also detect compound phrases at line level (e.g. "Central Screw", "Locking Screw")
+    lines.forEach(line => {
+      const t = (line.text || '').toLowerCase();
+      const compoundRe = /(central\s+screw|locking\s+screw|glenoid\s+baseplate|baseplate|glenosphere|gienosphere|humeral\s+(stem|insert|cup)|short\s+stem)/g;
+      const matches = [...t.matchAll(compoundRe)];
+      matches.forEach(m => {
+        const phrase = m[1];
+        const cidx = categorize(phrase);
+        if (cidx >= 0) {
+          const tight = bboxForMatchInLine(line, m.index, phrase.length);
+          productHits.push({ categoryIdx: cidx, bbox: tight });
+        }
+      });
+    });
+
+    // ---- Find loose dimension hits (fallback for spec field) ----
     const dimHits = []; // { value, bbox }
     const dimRe = /\b(\d{1,3}(?:\.\d{1,2})?)\s*mm\b/gi;
     lines.forEach(line => {
       const matches = [...(line.text || '').matchAll(dimRe)];
       matches.forEach(m => {
-        dimHits.push({ value: `${m[1]}mm`, bbox: line.bbox });
+        const tight = bboxForMatchInLine(line, m.index, m[0].length);
+        dimHits.push({ value: `${m[1]}mm`, bbox: tight });
       });
     });
 
@@ -959,30 +1021,35 @@
       }
       const cropBox = computeCropBox(lot.bbox, expiration ? expiration.bbox : null);
 
-      // Primary: nearest GTIN → look up full product name from DB
-      let productName = '';
-      let spec = '';
-      if (gtinHits.length) {
-        const scored = gtinHits.map(g => ({
-          ...g,
-          dist: Math.hypot(bboxCenter(g.bbox).x - lotCenter.x, bboxCenter(g.bbox).y - lotCenter.y)
+      const nearest = (arr) => {
+        if (!arr.length) return null;
+        const scored = arr.map(o => ({
+          ...o,
+          dist: Math.hypot(bboxCenter(o.bbox).x - lotCenter.x, bboxCenter(o.bbox).y - lotCenter.y)
         }));
         scored.sort((a, b) => a.dist - b.dist);
-        productName = scored[0].name;
-        spec = extractSpecFromName(productName);
+        return scored[0];
+      };
+
+      // GTIN match (most reliable when present)
+      const gtinPick = nearest(gtinHits);
+      let productName = gtinPick ? gtinPick.name : '';
+      let spec = productName ? extractSpecFromName(productName) : '';
+
+      // Keyword-based category (works even when GTIN isn't visible text)
+      const kwPick = nearest(productHits);
+      let categoryIdx = categorize(productName);
+      if (categoryIdx < 0 && kwPick) categoryIdx = kwPick.categoryIdx;
+
+      // If no full product name from GTIN, synthesize from category label
+      if (!productName && categoryIdx >= 0) productName = CATEGORY_LABEL[categoryIdx];
+
+      // Spec fallback: nearest mm-token from OCR
+      if (!spec) {
+        const dimPick = nearest(dimHits);
+        if (dimPick) spec = dimPick.value;
       }
 
-      // Fallback: scan nearby dimension if name yielded none
-      if (!spec && dimHits.length) {
-        const scoredDims = dimHits.map(p => ({
-          ...p,
-          dist: Math.hypot(bboxCenter(p.bbox).x - lotCenter.x, bboxCenter(p.bbox).y - lotCenter.y)
-        }));
-        scoredDims.sort((a, b) => a.dist - b.dist);
-        spec = scoredDims[0].value;
-      }
-
-      const categoryIdx = categorize(productName);
       const recognized = categoryIdx >= 0;
 
       return {
@@ -1122,8 +1189,13 @@
       const thumbHtml = thumb
         ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
         : `<div class="thumb"></div>`;
-      const productHtml = s.productName
-        ? `<span class="product-name">${escapeHtml(s.productName)}</span>`
+      // Show "<product> <spec>" — but skip spec if it already appears in the name
+      let productText = s.productName || '';
+      if (s.spec && !productText.toLowerCase().includes(s.spec.toLowerCase())) {
+        productText = (productText + ' ' + s.spec).trim();
+      }
+      const productHtml = productText
+        ? `<span class="product-name">${escapeHtml(productText)}</span>`
         : '';
       const warnHtml = !s.recognized
         ? `<span class="warn-badge" title="제품 분류 미확인 — 직접 확인해 주세요">⚠ 체크 필요</span>`
