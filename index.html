@@ -72,6 +72,7 @@
   }
 
   .dropzone {
+    display: block;
     border: 2px dashed #cbd5e1;
     border-radius: 12px;
     background: var(--card);
@@ -79,6 +80,10 @@
     text-align: center;
     cursor: pointer;
     transition: border-color .15s, background .15s;
+  }
+
+  .dropzone p {
+    margin: 4px 0;
   }
 
   .dropzone.dragover {
@@ -363,12 +368,12 @@
 
   <div class="main-grid">
     <div class="left-col">
-      <label class="dropzone" id="dropzone">
+      <div class="dropzone" id="dropzone">
         <p><strong>이미지를 드래그하거나 클릭하여 업로드</strong></p>
         <p class="hint">또는 <kbd>Ctrl</kbd> + <kbd>V</kbd> 로 클립보드 이미지 붙여넣기</p>
         <p class="hint">JPG, PNG 등의 사진 파일 지원</p>
         <input type="file" id="fileInput" accept="image/*" />
-      </label>
+      </div>
 
       <div class="preview-section" id="previewSection" style="margin-top:16px;">
         <div class="preview-card">
