@@ -31,20 +31,21 @@
   }
 
   .container {
-    max-width: 900px;
+    max-width: 1100px;
     margin: 0 auto;
-    padding: 24px 16px 80px;
+    padding: 32px 24px 80px;
   }
 
   header {
     text-align: center;
-    margin-bottom: 24px;
+    margin-bottom: 28px;
   }
 
   header h1 {
-    font-size: 22px;
-    margin: 0 0 6px;
+    font-size: 26px;
+    margin: 0 0 8px;
     color: var(--text);
+    letter-spacing: -0.01em;
   }
 
   header p {
@@ -53,11 +54,28 @@
     font-size: 14px;
   }
 
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+
+  @media (min-width: 900px) {
+    .main-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+  }
+
+  .left-col, .right-col {
+    min-width: 0;
+  }
+
   .dropzone {
     border: 2px dashed #cbd5e1;
     border-radius: 12px;
     background: var(--card);
-    padding: 32px 16px;
+    padding: 48px 20px;
     text-align: center;
     cursor: pointer;
     transition: border-color .15s, background .15s;
@@ -77,6 +95,17 @@
   .dropzone .hint {
     font-size: 12px;
     color: #9ca3af;
+  }
+
+  .dropzone kbd {
+    display: inline-block;
+    background: #f3f4f6;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-family: inherit;
+    color: #374151;
   }
 
   .dropzone input[type=file] {
@@ -118,7 +147,6 @@
   }
 
   .preview-section {
-    margin-top: 20px;
     display: none;
   }
 
@@ -129,15 +157,15 @@
     border-radius: 12px;
     box-shadow: var(--shadow);
     padding: 16px;
-    margin-bottom: 16px;
   }
 
   .preview-card img {
     max-width: 100%;
-    max-height: 400px;
+    max-height: 520px;
     display: block;
     margin: 0 auto;
     border-radius: 8px;
+    object-fit: contain;
   }
 
   .actions-row {
@@ -333,33 +361,40 @@
     <p>스티커 이미지를 업로드하면 LOT 번호와 유효기간을 자동으로 추출합니다</p>
   </header>
 
-  <label class="dropzone" id="dropzone">
-    <p><strong>이미지를 드래그하거나 클릭하여 업로드</strong></p>
-    <p class="hint">JPG, PNG 등의 사진 파일 지원</p>
-    <input type="file" id="fileInput" accept="image/*" />
-  </label>
+  <div class="main-grid">
+    <div class="left-col">
+      <label class="dropzone" id="dropzone">
+        <p><strong>이미지를 드래그하거나 클릭하여 업로드</strong></p>
+        <p class="hint">또는 <kbd>Ctrl</kbd> + <kbd>V</kbd> 로 클립보드 이미지 붙여넣기</p>
+        <p class="hint">JPG, PNG 등의 사진 파일 지원</p>
+        <input type="file" id="fileInput" accept="image/*" />
+      </label>
 
-  <div class="preview-section" id="previewSection">
-    <div class="preview-card">
-      <img id="previewImg" alt="업로드된 이미지" />
-      <div class="actions-row">
-        <button class="btn" id="analyzeBtn">OCR 분석 시작</button>
-        <button class="btn btn-outline" id="resetBtn">다시 선택</button>
+      <div class="preview-section" id="previewSection" style="margin-top:16px;">
+        <div class="preview-card">
+          <img id="previewImg" alt="업로드된 이미지" />
+          <div class="actions-row">
+            <button class="btn" id="analyzeBtn">OCR 분석 시작</button>
+            <button class="btn btn-outline" id="resetBtn">다시 선택</button>
+          </div>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="loading" id="loading">
-    <div class="spinner"></div>
-    <p id="loadingText">분석 중...</p>
-    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-  </div>
+    <div class="right-col">
+      <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <p id="loadingText">분석 중...</p>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      </div>
 
-  <div class="results" id="results"></div>
+      <div class="results" id="results"></div>
 
-  <div class="raw-text-toggle" id="rawTextToggle" style="display:none;">
-    <a id="toggleRawBtn">원본 인식 텍스트 보기/숨기기</a>
-    <pre class="raw-text" id="rawText"></pre>
+      <div class="raw-text-toggle" id="rawTextToggle" style="display:none;">
+        <a id="toggleRawBtn">원본 인식 텍스트 보기/숨기기</a>
+        <pre class="raw-text" id="rawText"></pre>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -406,6 +441,23 @@
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (file) handleFile(file);
+  });
+
+  // Paste from clipboard (Ctrl+V / Cmd+V)
+  window.addEventListener('paste', (e) => {
+    const items = (e.clipboardData || window.clipboardData)?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type && item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          handleFile(file);
+          showToast('이미지를 붙여넣었습니다');
+          return;
+        }
+      }
+    }
   });
 
   function handleFile(file) {
