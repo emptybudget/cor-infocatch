@@ -2218,84 +2218,66 @@
   }
 
   // ===== Rendering =====
-  function renderResults(stickers) {
-    currentStickers = stickers || [];
-    if (!stickers || stickers.length === 0) {
-      results.innerHTML = `
-        <div class="empty-state">
-          인식된 LOT 정보가 없습니다.<br>
-          이미지가 선명한지 확인하거나 다시 촬영해 주세요.
-        </div>`;
-      return;
-    }
 
-    const header = `
-      <div class="results-header">
-        <h2>추출 결과</h2>
-        <div class="export-btns">
-          <span class="results-count">${stickers.length}개 스티커</span>
-          <button class="btn btn-outline btn-sm" id="copyTsvBtn">📋 전체 복사</button>
-          <button class="btn btn-outline btn-sm" id="downloadCsvBtn">💾 CSV 다운로드</button>
-        </div>
-      </div>
-      ${pipelineStatus ? `<div class="pipeline-status">${escapeHtml(pipelineStatus)}</div>` : ''}`;
+  // 카드 1장의 HTML 문자열을 만든다.
+  // 인자: 스티커 데이터(s), 인덱스(i), 부족 카테고리 배열(shortfall).
+  // 반환: results 영역에 들어갈 카드 한 장의 HTML.
+  function buildCardHtml(s, i, shortfall) {
+    const thumb = s.isPlaceholder ? null : makeCropThumbnail(s.cropBox);
+    const thumbHtml = thumb
+      ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
+      : (s.isPlaceholder
+          ? `<div class="thumb empty">?</div>`
+          : `<div class="thumb"></div>`);
+    const productHtml = s.productName
+      ? `<span class="product-name">${escapeHtml(s.productName)}</span>`
+      : '';
+    const warnHtml = !s.recognized
+      ? `<span class="warn-badge" title="제품 분류 미확인 — 직접 확인해 주세요">⚠ 체크 필요</span>`
+      : '';
+    const missingHtml = s.isPlaceholder
+      ? `<span class="missing-badge" title="감지되지 않음 — 직접 입력해 주세요">미감지</span>`
+      : '';
+    const isError = s.isPlaceholder || !s.recognized;
+    const roiBtnHtml = ocrCanvas
+      ? `<button class="roi-target-btn ${isError ? '' : 'subtle'}" data-roi-fix="${i}" title="프리뷰에서 영역 드래그">${isError ? '! 영역 지정' : '다시 지정'}</button>`
+      : '';
+    const cardCls = s.isPlaceholder ? 'sticker-card placeholder' : 'sticker-card';
 
-    const shortfall = computeShortfall(getTemplate());
+    // For unknown detected stickers, offer to assign them to a category
+    // that is currently short-stocked vs the template.
+    const showChooser = !s.isPlaceholder && s.categoryIdx < 0 && shortfall.length > 0;
+    const chooserHtml = showChooser
+      ? `<div class="chooser">
+           <span class="chooser-label">이게 무엇인가요?</span>
+           ${shortfall.map(c => `<button class="btn btn-outline chooser-btn" data-assign="${c}">${CATEGORY_LABEL[c]}</button>`).join('')}
+         </div>`
+      : '';
 
-    const cards = stickers.map((s, i) => {
-      const thumb = s.isPlaceholder ? null : makeCropThumbnail(s.cropBox);
-      const thumbHtml = thumb
-        ? `<img class="thumb" src="${thumb}" alt="스티커 ${i+1} 영역" />`
-        : (s.isPlaceholder
-            ? `<div class="thumb empty">?</div>`
-            : `<div class="thumb"></div>`);
-      const productHtml = s.productName
-        ? `<span class="product-name">${escapeHtml(s.productName)}</span>`
-        : '';
-      const warnHtml = !s.recognized
-        ? `<span class="warn-badge" title="제품 분류 미확인 — 직접 확인해 주세요">⚠ 체크 필요</span>`
-        : '';
-      const missingHtml = s.isPlaceholder
-        ? `<span class="missing-badge" title="감지되지 않음 — 직접 입력해 주세요">미감지</span>`
-        : '';
-      const isError = s.isPlaceholder || !s.recognized;
-      const roiBtnHtml = ocrCanvas
-        ? `<button class="roi-target-btn ${isError ? '' : 'subtle'}" data-roi-fix="${i}" title="프리뷰에서 영역 드래그">${isError ? '! 영역 지정' : '다시 지정'}</button>`
-        : '';
-      const cardCls = s.isPlaceholder ? 'sticker-card placeholder' : 'sticker-card';
-
-      // For unknown detected stickers, offer to assign them to a category
-      // that is currently short-stocked vs the template.
-      const showChooser = !s.isPlaceholder && s.categoryIdx < 0 && shortfall.length > 0;
-      const chooserHtml = showChooser
-        ? `<div class="chooser">
-             <span class="chooser-label">이게 무엇인가요?</span>
-             ${shortfall.map(c => `<button class="btn btn-outline chooser-btn" data-assign="${c}">${CATEGORY_LABEL[c]}</button>`).join('')}
-           </div>`
-        : '';
-
-      return `
-        <div class="${cardCls}" data-idx="${i}">
-          ${thumbHtml}
-          <h3>스티커 #${i + 1}${productHtml}${warnHtml}${missingHtml}${roiBtnHtml}</h3>
-          <div class="fields">
-            <div class="field-row">
-              <span class="field-label">LOT</span>
-              <input class="field-input" data-field="lot" value="${escapeHtml(s.lot)}" />
-              <button class="btn btn-sm" data-copy="lot">복사</button>
-            </div>
-            <div class="field-row">
-              <span class="field-label">유효기간</span>
-              <input class="field-input" data-field="exp" value="${escapeHtml(s.expiration)}" placeholder="YYYYMMDD" />
-              <button class="btn btn-sm" data-copy="exp">복사</button>
-            </div>
+    return `
+      <div class="${cardCls}" data-idx="${i}">
+        ${thumbHtml}
+        <h3>스티커 #${i + 1}${productHtml}${warnHtml}${missingHtml}${roiBtnHtml}</h3>
+        <div class="fields">
+          <div class="field-row">
+            <span class="field-label">LOT</span>
+            <input class="field-input" data-field="lot" value="${escapeHtml(s.lot)}" />
+            <button class="btn btn-sm" data-copy="lot">복사</button>
           </div>
-          ${chooserHtml}
-        </div>`;
-    }).join('');
+          <div class="field-row">
+            <span class="field-label">유효기간</span>
+            <input class="field-input" data-field="exp" value="${escapeHtml(s.expiration)}" placeholder="YYYYMMDD" />
+            <button class="btn btn-sm" data-copy="exp">복사</button>
+          </div>
+        </div>
+        ${chooserHtml}
+      </div>`;
+  }
 
-    results.innerHTML = header + cards;
-
+  // results 영역에 카드가 삽입된 직후, 각 버튼과 썸네일에 클릭 이벤트를 연결한다.
+  // 연결 대상: 썸네일(라이트박스), 복사 버튼, ROI 영역 지정 버튼, 카테고리 chooser 버튼,
+  //            전체 복사(TSV) 버튼, CSV 다운로드 버튼.
+  function bindCardEvents() {
     // Bind thumb click → lightbox
     results.querySelectorAll('.sticker-card .thumb').forEach(thumb => {
       thumb.addEventListener('click', () => {
@@ -2377,6 +2359,35 @@
         showToast('CSV 파일을 저장했습니다');
       });
     }
+  }
+
+  function renderResults(stickers) {
+    currentStickers = stickers || [];
+    if (!stickers || stickers.length === 0) {
+      results.innerHTML = `
+        <div class="empty-state">
+          인식된 LOT 정보가 없습니다.<br>
+          이미지가 선명한지 확인하거나 다시 촬영해 주세요.
+        </div>`;
+      return;
+    }
+
+    const header = `
+      <div class="results-header">
+        <h2>추출 결과</h2>
+        <div class="export-btns">
+          <span class="results-count">${stickers.length}개 스티커</span>
+          <button class="btn btn-outline btn-sm" id="copyTsvBtn">📋 전체 복사</button>
+          <button class="btn btn-outline btn-sm" id="downloadCsvBtn">💾 CSV 다운로드</button>
+        </div>
+      </div>
+      ${pipelineStatus ? `<div class="pipeline-status">${escapeHtml(pipelineStatus)}</div>` : ''}`;
+
+    const shortfall = computeShortfall(getTemplate());
+    const cards = stickers.map((s, i) => buildCardHtml(s, i, shortfall)).join('');
+
+    results.innerHTML = header + cards;
+    bindCardEvents();
   }
 
   // B1: 내보내기용 행 문자열 조립
