@@ -243,6 +243,16 @@
     margin: 0;
   }
 
+  .pipeline-status {
+    font-size: 12px;
+    color: var(--muted);
+    margin: -4px 0 12px;
+    padding: 6px 10px;
+    background: #f3f4f6;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+  }
+
   .results-count {
     font-size: 13px;
     color: var(--muted);
@@ -751,6 +761,7 @@
   let ocrCanvas = null; // canvas used for OCR; reused for crop thumbnails
   let currentStickers = [];
   let detectedStickers = []; // raw extraction; mutable for chooser-driven category reassignment
+  let pipelineStatus = '';   // human-readable note shown in the results header
 
   // ===== Upload & Preview =====
   dropzone.addEventListener('click', () => fileInput.click());
@@ -837,25 +848,39 @@
     resetBtn.disabled = true;
     progressFill.style.width = '0%';
     loadingText.textContent = '이미지 전처리 중...';
+    pipelineStatus = '';
 
     try {
       ocrCanvas = await preprocessImage(file);
+      console.log('[runOCR] preprocessed canvas', ocrCanvas.width, 'x', ocrCanvas.height);
 
       // Try per-sticker detection first. OpenCV.js is ~9MB on first load
       // (CDN-cached thereafter); a network/load failure transparently
       // falls back to the legacy whole-image 2-pass OCR.
-      loadingText.textContent = '스티커 영역 감지 중...';
+      loadingText.textContent = '감지기 로드 중 (첫 실행 시 9MB 다운로드)...';
       progressFill.style.width = '5%';
       let boxes = [];
+      let detectErr = null;
       try {
         boxes = await detectStickerBoxes(ocrCanvas);
+        console.log('[runOCR] detection returned', boxes.length, 'boxes');
       } catch (e) {
-        console.warn('Sticker detection unavailable:', e);
+        detectErr = e;
+        console.warn('[runOCR] detection unavailable:', e);
       }
 
       if (boxes.length >= 1 && boxes.length <= 40) {
+        pipelineStatus = `✓ 스티커별 분석 (${boxes.length}개 감지)`;
         await runPerStickerOCR(boxes);
       } else {
+        if (detectErr) {
+          pipelineStatus = `⚠ 감지기 로드 실패 — 전체 분석 (${detectErr.message})`;
+        } else {
+          pipelineStatus = `⚠ 스티커 감지 0개 — 전체 분석으로 폴백`;
+        }
+        console.log('[runOCR]', pipelineStatus);
+        loadingText.textContent = pipelineStatus;
+        await new Promise(r => setTimeout(r, 800));
         await runFullImageOCR();
       }
     } catch (err) {
@@ -960,37 +985,63 @@
   function loadOpenCV() {
     if (cvLoaded) return Promise.resolve();
     if (cvLoadingPromise) return cvLoadingPromise;
+    console.log('[opencv] loading from CDN...');
     cvLoadingPromise = new Promise((resolve, reject) => {
       const script = document.createElement('script');
       script.src = 'https://docs.opencv.org/4.x/opencv.js';
       script.async = true;
+      const timeout = setTimeout(() => {
+        reject(new Error('OpenCV 로드 타임아웃 (45s)'));
+      }, 45000);
       script.onload = () => {
-        if (typeof cv === 'undefined') return reject(new Error('cv undefined'));
-        if (cv.Mat) { cvLoaded = true; resolve(); return; }
-        cv.onRuntimeInitialized = () => { cvLoaded = true; resolve(); };
+        console.log('[opencv] script tag loaded');
+        if (typeof cv === 'undefined') {
+          clearTimeout(timeout);
+          return reject(new Error('cv 전역 정의 안 됨'));
+        }
+        if (cv.Mat) {
+          clearTimeout(timeout);
+          cvLoaded = true;
+          console.log('[opencv] runtime ready (sync)');
+          resolve();
+          return;
+        }
+        cv.onRuntimeInitialized = () => {
+          clearTimeout(timeout);
+          cvLoaded = true;
+          console.log('[opencv] runtime ready (callback)');
+          resolve();
+        };
       };
-      script.onerror = () => reject(new Error('OpenCV failed to load'));
+      script.onerror = (e) => {
+        clearTimeout(timeout);
+        console.error('[opencv] script error', e);
+        reject(new Error('OpenCV CDN 로드 실패'));
+      };
       document.head.appendChild(script);
     });
     return cvLoadingPromise;
   }
 
   // Identify likely sticker rectangles in the preprocessed canvas.
-  // Strategy: stickers are bright/white-ish patches on a darker box
-  // surface. Adaptive threshold → morphological close → external
-  // contours → filter by area + aspect ratio.
+  // Stickers are bright/white patches; we Otsu-threshold to split
+  // bright vs. dark, close text gaps inside each sticker with a small
+  // morph kernel (smaller than before so adjacent stickers stay
+  // separate), then take external contours.
   async function detectStickerBoxes(canvas) {
     await loadOpenCV();
     const src = cv.imread(canvas);
     const gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-    const bin = new cv.Mat();
-    cv.adaptiveThreshold(gray, bin, 255,
-      cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY,
-      61, -5);
+    // Slight blur reduces texture noise on the desk surface.
+    const blurred = new cv.Mat();
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
 
-    const ks = Math.max(15, Math.round(Math.min(canvas.width, canvas.height) * 0.012));
+    const bin = new cv.Mat();
+    cv.threshold(blurred, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+
+    const ks = Math.max(5, Math.round(Math.min(canvas.width, canvas.height) * 0.006));
     const kernel = cv.Mat.ones(ks, ks, cv.CV_8U);
     const closed = new cv.Mat();
     cv.morphologyEx(bin, closed, cv.MORPH_CLOSE, kernel);
@@ -1000,24 +1051,32 @@
     cv.findContours(closed, contours, hierarchy,
       cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
+    console.log('[detect] kernel=' + ks + ', raw contours:', contours.size());
+
     const imgArea = canvas.width * canvas.height;
     const minArea = imgArea * 0.003;
     const maxArea = imgArea * 0.4;
     const boxes = [];
+    let rejected = { area: 0, ar: 0 };
     for (let i = 0; i < contours.size(); i++) {
       const c = contours.get(i);
       const area = cv.contourArea(c);
-      if (area >= minArea && area <= maxArea) {
+      if (area < minArea || area > maxArea) {
+        rejected.area++;
+      } else {
         const r = cv.boundingRect(c);
         const ar = r.width / r.height;
-        if (ar >= 0.3 && ar <= 5) {
+        if (ar < 0.3 || ar > 5) {
+          rejected.ar++;
+        } else {
           boxes.push({ x: r.x, y: r.y, w: r.width, h: r.height });
         }
       }
       c.delete();
     }
+    console.log('[detect] kept:', boxes.length, 'rejected:', rejected);
 
-    src.delete(); gray.delete(); bin.delete();
+    src.delete(); gray.delete(); blurred.delete(); bin.delete();
     kernel.delete(); closed.delete();
     contours.delete(); hierarchy.delete();
 
@@ -1640,7 +1699,8 @@
       <div class="results-header">
         <h2>추출 결과</h2>
         <span class="results-count">${stickers.length}개 스티커</span>
-      </div>`;
+      </div>
+      ${pipelineStatus ? `<div class="pipeline-status">${escapeHtml(pipelineStatus)}</div>` : ''}`;
 
     const shortfall = computeShortfall(getTemplate());
 
