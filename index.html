@@ -481,6 +481,22 @@
 
   .detected-box.editable {
     pointer-events: auto;
+    cursor: move;
+    touch-action: none;
+  }
+
+  .box-resize-handle {
+    position: absolute;
+    bottom: -9px;
+    right: -9px;
+    width: 18px;
+    height: 18px;
+    background: var(--primary);
+    border: 2px solid #fff;
+    border-radius: 50%;
+    cursor: nwse-resize;
+    touch-action: none;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
   }
 
   .box-del-btn {
@@ -752,7 +768,7 @@
             <button class="btn btn-outline" id="addBoxBtn">+ 박스 추가</button>
             <button class="btn btn-outline" id="cancelReviewBtn">취소</button>
           </div>
-          <div class="review-hint">파란 박스 우상단 <strong>×</strong> 로 삭제 · "+ 박스 추가" 누르고 드래그로 누락된 영역 직접 그리기</div>
+          <div class="review-hint">파란 박스: <strong>드래그로 이동</strong> · 우하단 점으로 <strong>크기 조정</strong> · 우상단 <strong>×</strong> 로 삭제 · "+ 박스 추가" 모드에서는 빈 영역을 여러 번 드래그 가능</div>
         </div>
       </div>
     </div>
@@ -879,7 +895,7 @@
   });
 
   document.getElementById('confirmBoxesBtn').addEventListener('click', confirmAndRunOCR);
-  document.getElementById('addBoxBtn').addEventListener('click', startAddBoxMode);
+  document.getElementById('addBoxBtn').addEventListener('click', toggleAddBoxMode);
   document.getElementById('cancelReviewBtn').addEventListener('click', cancelReview);
 
   // ===== OCR =====
@@ -985,20 +1001,94 @@
       div.style.width = (box.w / W * 100) + '%';
       div.style.height = (box.h / H * 100) + '%';
 
-      const btn = document.createElement('button');
-      btn.className = 'box-del-btn';
-      btn.type = 'button';
-      btn.textContent = '×';
-      btn.title = '이 박스 삭제';
-      btn.addEventListener('click', (e) => {
+      const delBtn = document.createElement('button');
+      delBtn.className = 'box-del-btn';
+      delBtn.type = 'button';
+      delBtn.textContent = '×';
+      delBtn.title = '이 박스 삭제';
+      delBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         pendingBoxes.splice(idx, 1);
         drawPendingBoxes();
       });
-      // Block pointerdown from bubbling to the overlay (would start a drag)
-      btn.addEventListener('pointerdown', e => e.stopPropagation());
-      div.appendChild(btn);
+      delBtn.addEventListener('pointerdown', e => e.stopPropagation());
+
+      const resize = document.createElement('div');
+      resize.className = 'box-resize-handle';
+      resize.title = '드래그로 크기 조정';
+
+      div.appendChild(delBtn);
+      div.appendChild(resize);
       container.appendChild(div);
+
+      attachBoxMove(div, box);
+      attachBoxResize(resize, div, box);
+    });
+  }
+
+  // Drag the body of a pending box to reposition it. Updates the box
+  // object (which lives in pendingBoxes) on pointerup; live preview
+  // during the drag is done via inline style only.
+  function attachBoxMove(boxDiv, box) {
+    boxDiv.addEventListener('pointerdown', (e) => {
+      if (e.target !== boxDiv) return; // ignore clicks on delete / resize handle
+      e.stopPropagation();
+      e.preventDefault();
+      boxDiv.setPointerCapture(e.pointerId);
+      const containerRect = boxDiv.parentElement.getBoundingClientRect();
+      const W = ocrCanvas.width, H = ocrCanvas.height;
+      const sx = W / containerRect.width;
+      const sy = H / containerRect.height;
+      const startX = e.clientX, startY = e.clientY;
+      const orig = { x: box.x, y: box.y };
+      let last = { ...orig };
+      const onMove = (ev) => {
+        const dx = (ev.clientX - startX) * sx;
+        const dy = (ev.clientY - startY) * sy;
+        last.x = Math.max(0, Math.min(W - box.w, orig.x + dx));
+        last.y = Math.max(0, Math.min(H - box.h, orig.y + dy));
+        boxDiv.style.left = (last.x / W * 100) + '%';
+        boxDiv.style.top = (last.y / H * 100) + '%';
+      };
+      const onUp = () => {
+        boxDiv.removeEventListener('pointermove', onMove);
+        boxDiv.removeEventListener('pointerup', onUp);
+        box.x = last.x; box.y = last.y;
+      };
+      boxDiv.addEventListener('pointermove', onMove);
+      boxDiv.addEventListener('pointerup', onUp);
+    });
+  }
+
+  // Drag the bottom-right handle to resize. Width/height clamped so
+  // the box stays inside the image and never collapses below 20px.
+  function attachBoxResize(handle, boxDiv, box) {
+    handle.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      const containerRect = boxDiv.parentElement.getBoundingClientRect();
+      const W = ocrCanvas.width, H = ocrCanvas.height;
+      const sx = W / containerRect.width;
+      const sy = H / containerRect.height;
+      const startX = e.clientX, startY = e.clientY;
+      const orig = { w: box.w, h: box.h };
+      let last = { ...orig };
+      const onMove = (ev) => {
+        const dx = (ev.clientX - startX) * sx;
+        const dy = (ev.clientY - startY) * sy;
+        last.w = Math.max(20, Math.min(W - box.x, orig.w + dx));
+        last.h = Math.max(20, Math.min(H - box.y, orig.h + dy));
+        boxDiv.style.width = (last.w / W * 100) + '%';
+        boxDiv.style.height = (last.h / H * 100) + '%';
+      };
+      const onUp = () => {
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        box.w = last.w; box.h = last.h;
+      };
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
     });
   }
 
@@ -1034,11 +1124,18 @@
     if (!inReviewMode) return;
     roiAddMode = true;
     previewCard.classList.add('roi-mode', 'adding-box');
+    document.getElementById('addBoxBtn').textContent = '✓ 추가 종료';
   }
 
   function exitAddBoxMode() {
     roiAddMode = false;
     previewCard.classList.remove('roi-mode', 'adding-box');
+    document.getElementById('addBoxBtn').textContent = '+ 박스 추가';
+  }
+
+  function toggleAddBoxMode() {
+    if (roiAddMode) exitAddBoxMode();
+    else startAddBoxMode();
   }
 
   // Per-sticker pipeline: one OCR pass per detected rectangle, reusing
@@ -2056,7 +2153,9 @@
     const w = Math.abs(x - roiStart.x), h = Math.abs(y - roiStart.y);
     roiStart = null;
     if (w < 15 || h < 15) {
-      if (roiAddMode) exitAddBoxMode(); else exitROI();
+      if (roiRectEl) { roiRectEl.remove(); roiRectEl = null; }
+      if (roiAddMode) return; // ignore tiny drags, stay in add mode
+      exitROI();
       return;
     }
     const sx = ocrCanvas.width / r.width;
@@ -2071,8 +2170,8 @@
         w: box.x1 - box.x0, h: box.y1 - box.y0
       });
       drawPendingBoxes();
-      exitAddBoxMode();
-      return;
+      if (roiRectEl) { roiRectEl.remove(); roiRectEl = null; }
+      return; // stay in add mode for repeated drawing
     }
     await runROIOCR(box);
   });
