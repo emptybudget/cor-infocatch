@@ -2023,13 +2023,40 @@
     });
   }
 
-  // Normalize a token to uppercase alphanumeric. Coralis LOTs never use
-  // the letter O — only digit 0 — so any O is treated as a misread 0.
+  // A1: LOT 토큰 정규화 — OCR 오인식 글자를 숫자/문자로 교정.
+  // 전략: 원본이 isCoralisLot() 패턴을 통과하면 불필요한 보정 없이 그대로 반환.
+  // 통과 못 할 때만 혼동 쌍(I→1, S→5, B→8, Z→2)을 적용해서 패턴을 맞춰 봄.
+  // 왜 이 글자들인가:
+  //   O↔0: 기존부터 적용 (Coralis LOT에 알파벳 O 없음)
+  //   I↔1: OCR에서 가장 흔한 오인식 쌍
+  //   S↔5, B↔8, Z↔2: Tesseract가 세리프/산세리프 차이로 자주 혼동
+  // 단, Coralis LOT에는 실제로 B 가 포함될 수 있음(예: 10BBBFC4).
+  // 그래서 "원본 우선" 원칙 — 보정은 패턴 불일치 시에만 시도.
   function normalizeLotToken(raw) {
     if (!raw) return null;
-    const s = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/O/g, '0');
-    if (s.length < 5 || s.length > 12) return null;
-    return s;
+    // 1단계: 기본 정제 (대문자화, 특수문자 제거, O→0 변환)
+    const base = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/O/g, '0');
+    if (base.length < 5 || base.length > 12) return null;
+
+    // 2단계: 원본이 이미 패턴을 만족하면 그대로 반환 (보정 불필요)
+    if (isCoralisLot(base)) return base;
+
+    // 3단계: B→8 보정 없이 I/S/Z만 먼저 시도 (B는 실제 LOT에 포함될 수 있음).
+    // 예: I0BBBFC4 → 10BBBFC4 (I→1만으로 패턴 통과)
+    const partial = base
+      .replace(/I/g, '1')  // I(알파벳 아이) → 1(숫자 일)
+      .replace(/S/g, '5')  // S → 5
+      .replace(/Z/g, '2'); // Z → 2
+    if (isCoralisLot(partial)) return partial;
+
+    // 4단계: B→8까지 모두 적용한 전체 보정 시도.
+    // B 보정은 최후 수단 — partial이 실패한 경우에만.
+    const corrected = partial.replace(/B/g, '8'); // B → 8
+    if (isCoralisLot(corrected)) return corrected;
+
+    // 어떤 보정으로도 패턴을 만족 못 하면 기본 정제 결과 반환
+    // (LOT prefix 경로에서 패턴 무관하게 수집하는 경우를 위해)
+    return base;
   }
 
   // Two bboxes are "near" if their centers sit within ~5 LOT heights.
