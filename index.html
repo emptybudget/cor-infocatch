@@ -479,6 +479,44 @@
     background: rgba(37, 99, 235, 0.08);
   }
 
+  .detected-box.editable {
+    pointer-events: auto;
+  }
+
+  .box-del-btn {
+    position: absolute;
+    top: -10px;
+    right: -10px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--danger);
+    color: #fff;
+    border: 2px solid #fff;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+
+  .review-actions { display: none; }
+  .review-hint {
+    display: none;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+  .preview-card.review-mode .default-actions { display: none; }
+  .preview-card.review-mode .review-actions { display: flex; }
+  .preview-card.review-mode .review-hint { display: block; }
+  .preview-card.adding-box .roi-hint::after { content: ' — 한 번 그리면 추가 모드 종료'; }
+
   .preview-card.roi-mode .roi-overlay { display: block; }
   .preview-card.roi-mode img { filter: brightness(0.85); }
 
@@ -705,10 +743,16 @@
             <div class="roi-hint">이미지에서 해당 스티커 영역을 드래그</div>
             <div class="roi-overlay" id="roiOverlay"></div>
           </div>
-          <div class="actions-row">
+          <div class="actions-row default-actions">
             <button class="btn" id="analyzeBtn">OCR 분석 시작</button>
             <button class="btn btn-outline" id="resetBtn">다시 선택</button>
           </div>
+          <div class="actions-row review-actions">
+            <button class="btn" id="confirmBoxesBtn">OCR 진행 →</button>
+            <button class="btn btn-outline" id="addBoxBtn">+ 박스 추가</button>
+            <button class="btn btn-outline" id="cancelReviewBtn">취소</button>
+          </div>
+          <div class="review-hint">파란 박스 우상단 <strong>×</strong> 로 삭제 · "+ 박스 추가" 누르고 드래그로 누락된 영역 직접 그리기</div>
         </div>
       </div>
     </div>
@@ -829,9 +873,14 @@
     results.innerHTML = '';
     rawTextToggle.style.display = 'none';
     exitROI();
+    exitReviewMode();
     const db = document.getElementById('detectedBoxes');
     if (db) db.innerHTML = '';
   });
+
+  document.getElementById('confirmBoxesBtn').addEventListener('click', confirmAndRunOCR);
+  document.getElementById('addBoxBtn').addEventListener('click', startAddBoxMode);
+  document.getElementById('cancelReviewBtn').addEventListener('click', cancelReview);
 
   // ===== OCR =====
   analyzeBtn.addEventListener('click', async () => {
@@ -870,19 +919,24 @@
       }
 
       if (boxes.length >= 1 && boxes.length <= 40) {
-        pipelineStatus = `✓ 스티커별 분석 (${boxes.length}개 감지)`;
-        await runPerStickerOCR(boxes);
-      } else {
-        if (detectErr) {
-          pipelineStatus = `⚠ 감지기 로드 실패 — 전체 분석 (${detectErr.message})`;
-        } else {
-          pipelineStatus = `⚠ 스티커 감지 0개 — 전체 분석으로 폴백`;
-        }
-        console.log('[runOCR]', pipelineStatus);
-        loadingText.textContent = pipelineStatus;
-        await new Promise(r => setTimeout(r, 800));
-        await runFullImageOCR();
+        // Pause here for user review. OCR runs only when they click
+        // "OCR 진행 →" via confirmAndRunOCR().
+        pipelineStatus = `✓ ${boxes.length}개 스티커 감지 — 검토 후 시작`;
+        loading.classList.remove('visible');
+        analyzeBtn.disabled = false;
+        resetBtn.disabled = false;
+        enterReviewMode(boxes);
+        return;
       }
+      if (detectErr) {
+        pipelineStatus = `⚠ 감지기 로드 실패 — 전체 분석 (${detectErr.message})`;
+      } else {
+        pipelineStatus = `⚠ 스티커 감지 0개 — 전체 분석으로 폴백`;
+      }
+      console.log('[runOCR]', pipelineStatus);
+      loadingText.textContent = pipelineStatus;
+      await new Promise(r => setTimeout(r, 800));
+      await runFullImageOCR();
     } catch (err) {
       console.error(err);
       results.innerHTML = `<div class="empty-state">분석 중 오류가 발생했습니다: ${err.message}</div>`;
@@ -891,6 +945,100 @@
       analyzeBtn.disabled = false;
       resetBtn.disabled = false;
     }
+  }
+
+  // ===== Review mode =====
+  // After detection, the user gets to add/delete boxes and adjust the
+  // template before per-sticker OCR runs.
+  let pendingBoxes = [];
+  let inReviewMode = false;
+  let roiAddMode = false;
+
+  function enterReviewMode(boxes) {
+    pendingBoxes = boxes.map(b => ({ ...b }));
+    inReviewMode = true;
+    previewCard.classList.add('review-mode');
+    drawPendingBoxes();
+    previewCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function exitReviewMode() {
+    pendingBoxes = [];
+    inReviewMode = false;
+    roiAddMode = false;
+    previewCard.classList.remove('review-mode', 'roi-mode', 'adding-box');
+    if (roiRectEl) { roiRectEl.remove(); roiRectEl = null; }
+    const container = document.getElementById('detectedBoxes');
+    if (container) container.innerHTML = '';
+  }
+
+  function drawPendingBoxes() {
+    const container = document.getElementById('detectedBoxes');
+    if (!container || !ocrCanvas) return;
+    container.innerHTML = '';
+    const W = ocrCanvas.width, H = ocrCanvas.height;
+    pendingBoxes.forEach((box, idx) => {
+      const div = document.createElement('div');
+      div.className = 'detected-box pending editable';
+      div.style.left = (box.x / W * 100) + '%';
+      div.style.top = (box.y / H * 100) + '%';
+      div.style.width = (box.w / W * 100) + '%';
+      div.style.height = (box.h / H * 100) + '%';
+
+      const btn = document.createElement('button');
+      btn.className = 'box-del-btn';
+      btn.type = 'button';
+      btn.textContent = '×';
+      btn.title = '이 박스 삭제';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pendingBoxes.splice(idx, 1);
+        drawPendingBoxes();
+      });
+      // Block pointerdown from bubbling to the overlay (would start a drag)
+      btn.addEventListener('pointerdown', e => e.stopPropagation());
+      div.appendChild(btn);
+      container.appendChild(div);
+    });
+  }
+
+  async function confirmAndRunOCR() {
+    if (pendingBoxes.length === 0) {
+      showToast('박스가 없습니다 — 추가하거나 취소하세요');
+      return;
+    }
+    const boxes = pendingBoxes.slice();
+    exitReviewMode();
+    loading.classList.add('visible');
+    progressFill.style.width = '0%';
+    analyzeBtn.disabled = true;
+    resetBtn.disabled = true;
+    try {
+      await runPerStickerOCR(boxes);
+    } catch (err) {
+      console.error(err);
+      results.innerHTML = `<div class="empty-state">OCR 중 오류: ${err.message}</div>`;
+    } finally {
+      loading.classList.remove('visible');
+      analyzeBtn.disabled = false;
+      resetBtn.disabled = false;
+    }
+  }
+
+  function cancelReview() {
+    exitReviewMode();
+    pipelineStatus = '';
+  }
+
+  function startAddBoxMode() {
+    if (!inReviewMode) return;
+    roiAddMode = true;
+    previewCard.classList.add('roi-mode', 'adding-box');
+  }
+
+  function exitAddBoxMode() {
+    roiAddMode = false;
+    previewCard.classList.remove('roi-mode', 'adding-box');
   }
 
   // Per-sticker pipeline: one OCR pass per detected rectangle, reusing
@@ -1907,13 +2055,25 @@
     const left = Math.min(x, roiStart.x), top = Math.min(y, roiStart.y);
     const w = Math.abs(x - roiStart.x), h = Math.abs(y - roiStart.y);
     roiStart = null;
-    if (w < 15 || h < 15) { exitROI(); return; }
+    if (w < 15 || h < 15) {
+      if (roiAddMode) exitAddBoxMode(); else exitROI();
+      return;
+    }
     const sx = ocrCanvas.width / r.width;
     const sy = ocrCanvas.height / r.height;
     const box = {
       x0: Math.round(left * sx), y0: Math.round(top * sy),
       x1: Math.round((left + w) * sx), y1: Math.round((top + h) * sy)
     };
+    if (roiAddMode) {
+      pendingBoxes.push({
+        x: box.x0, y: box.y0,
+        w: box.x1 - box.x0, h: box.y1 - box.y0
+      });
+      drawPendingBoxes();
+      exitAddBoxMode();
+      return;
+    }
     await runROIOCR(box);
   });
 
