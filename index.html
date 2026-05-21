@@ -2662,6 +2662,26 @@
     }
   });
 
+  // B2: LOT / 유효기간 input에서 Enter 키를 누르면 다음 스티커로 이동.
+  // Shift+Enter는 무시(사용자가 실수로 폼 제출하지 않도록).
+  // 기본 폼 제출 동작(form submit)도 차단.
+  function onLightboxInputKeydown(e) {
+    // 라이트박스가 열려 있을 때만 동작
+    if (!lightbox.classList.contains('show')) return;
+    // Shift+Enter는 그냥 무시 (아무 동작 안 함)
+    if (e.key === 'Enter' && e.shiftKey) {
+      e.preventDefault();
+      return;
+    }
+    // Enter 단독 → 다음 스티커로 이동
+    if (e.key === 'Enter') {
+      e.preventDefault(); // 폼 제출 기본 동작 차단
+      navigateLightbox(1);
+    }
+  }
+  lightboxLotInput.addEventListener('keydown', onLightboxInputKeydown);
+  lightboxExpInput.addEventListener('keydown', onLightboxInputKeydown);
+
   document.getElementById('lightboxLotCopy').addEventListener('click', () => {
     const v = lightboxLotInput.value;
     if (v) copyToClipboard(v); else showToast('복사할 값이 없습니다');
