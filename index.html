@@ -971,6 +971,37 @@
     return (px / total * 100) + '%';
   }
 
+  // 텍스트에서 날짜(YYYYMMDD 형식) 목록을 추출해 최신순으로 정렬해 반환.
+  // extractStickers의 addDate 로직 + runROIOCR의 인라인 날짜 파싱을 통합.
+  // 반환: [{ y, m, d, yyyymmdd }, ...] — 최신 날짜가 [0]번.
+  // 이 패턴은 'YYYY-MM-DD', 'YYYYMMDD', 'YYYY.MM.DD' 등 구분자 없거나 있는 형식을 모두 찾는다.
+  function parseDatesFromText(text) {
+    const dateRe = /(\d{4})[-.\s/]?(\d{2})[-.\s/]?(\d{2})/g;
+    const results = [];
+    for (const m of text.matchAll(dateRe)) {
+      const y = +m[1], mo = +m[2], d = +m[3];
+      if (y < 2000 || y > 2099) continue;
+      if (mo < 1 || mo > 12) continue;
+      if (d < 1 || d > 31) continue;
+      results.push({ y, m: mo, d, yyyymmdd: `${y}${pad(mo)}${pad(d)}` });
+    }
+    // 최신 날짜를 유효기간으로 선택하기 위해 내림차순 정렬
+    results.sort((a, b) => (b.y*10000 + b.m*100 + b.d) - (a.y*10000 + a.m*100 + a.d));
+    return results;
+  }
+
+  // 텍스트에서 LOT 번호를 추출. normalizeLotToken으로 OCR 오인식도 보정.
+  // "LOT:" 접두사 있는 형태와 LOT 패턴 직접 매칭 두 가지를 순서대로 시도.
+  function extractLotFromText(text) {
+    // 형태 1: "LOT 10BFCP02", "LOT:10BFCP02", "L0T 10BFCP02" 등 접두사 있는 형태
+    const m = text.match(/L[O0]T[:\s]*([A-Z0-9]{4,14})/i);
+    if (m) {
+      const normalized = normalizeLotToken(m[1]);
+      if (normalized) return normalized;
+    }
+    return '';
+  }
+
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('fileInput');
   const previewSection = document.getElementById('previewSection');
@@ -2510,14 +2541,10 @@
     await worker.terminate();
 
     const text = data.text || '';
-    const lotM = text.match(/L[O0]T[:\s]*([A-Z0-9]{4,14})/i);
-    const lot = lotM ? lotM[1].toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/O/g, '0') : '';
-
-    const dates = [...text.matchAll(/(\d{4})[-.\s/]?(\d{2})[-.\s/]?(\d{2})/g)]
-      .map(d => ({ y: +d[1], m: +d[2], dd: +d[3] }))
-      .filter(d => d.y >= 2000 && d.y <= 2099 && d.m >= 1 && d.m <= 12 && d.dd >= 1 && d.dd <= 31);
-    dates.sort((a, b) => (b.y*10000+b.m*100+b.dd) - (a.y*10000+a.m*100+a.dd));
-    const expiration = dates[0] ? `${dates[0].y}${pad(dates[0].m)}${pad(dates[0].dd)}` : '';
+    // LOT / 날짜 추출을 공용 헬퍼로 처리 (extractStickers와 동일 로직 재사용)
+    const lot = extractLotFromText(text);
+    const parsedDates = parseDatesFromText(text);
+    const expiration = parsedDates[0] ? parsedDates[0].yyyymmdd : '';
 
     if (roiTargetIdx !== null) {
       const target = currentStickers[roiTargetIdx];
