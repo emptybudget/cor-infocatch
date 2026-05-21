@@ -630,17 +630,67 @@
     justify-content: center;
     z-index: 2000;
     padding: 20px;
-    cursor: zoom-out;
   }
 
   .lightbox.show { display: flex; }
 
-  .lightbox img {
-    max-width: 95vw;
+  .lightbox-content {
+    display: flex;
+    gap: 20px;
+    align-items: stretch;
+    max-width: 96vw;
     max-height: 92vh;
+  }
+
+  .lightbox img {
+    max-height: 92vh;
+    max-width: calc(96vw - 360px);
     border-radius: 8px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.4);
     background: #fff;
+    object-fit: contain;
+    flex: 0 1 auto;
+  }
+
+  .lightbox-panel {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    width: 340px;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    align-self: center;
+  }
+
+  .lightbox-panel h3 {
+    margin: 0 0 4px;
+    font-size: 16px;
+    color: var(--text);
+  }
+
+  .lightbox-hint {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+
+  @media (max-width: 820px) {
+    .lightbox-content {
+      flex-direction: column;
+      gap: 12px;
+      align-items: center;
+    }
+    .lightbox img {
+      max-width: 96vw;
+      max-height: 50vh;
+    }
+    .lightbox-panel {
+      width: min(96vw, 480px);
+    }
   }
 
   .lightbox-close {
@@ -792,7 +842,23 @@
 
 <div class="lightbox" id="lightbox">
   <button class="lightbox-close" id="lightboxClose" aria-label="닫기">×</button>
-  <img id="lightboxImg" alt="확대 이미지" />
+  <div class="lightbox-content">
+    <img id="lightboxImg" alt="확대 이미지" />
+    <div class="lightbox-panel">
+      <h3 id="lightboxTitle">스티커</h3>
+      <div class="field-row">
+        <span class="field-label">LOT</span>
+        <input class="field-input" id="lightboxLot" />
+        <button class="btn btn-sm" id="lightboxLotCopy">복사</button>
+      </div>
+      <div class="field-row">
+        <span class="field-label">유효기간</span>
+        <input class="field-input" id="lightboxExp" placeholder="YYYYMMDD" />
+        <button class="btn btn-sm" id="lightboxExpCopy">복사</button>
+      </div>
+      <p class="lightbox-hint">확대 이미지를 보면서 직접 입력하세요. 배경 클릭 또는 × 로 저장하며 닫힙니다.</p>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast">클립보드에 복사되었습니다</div>
@@ -2227,22 +2293,79 @@
   }
 
   // ===== Lightbox =====
+  // Open shows the high-res crop next to editable LOT / 유효기간 inputs
+  // so the user can read the photo and type values without bouncing
+  // between the modal and the card. Close syncs the typed values back
+  // into both the sticker object and the card's input field.
+  let lightboxIdx = null;
+  const lightboxLotInput = document.getElementById('lightboxLot');
+  const lightboxExpInput = document.getElementById('lightboxExp');
+  const lightboxTitle = document.getElementById('lightboxTitle');
+
   function openLightbox(stickerIdx) {
     const s = currentStickers[stickerIdx];
     if (!s || !ocrCanvas) return;
     const hi = makeHiResCrop(s.cropBox);
     if (!hi) return;
+
+    // Pull whatever the user may have already typed in the card so the
+    // lightbox starts from the latest values, not the stale OCR result.
+    const card = document.querySelector(`.sticker-card[data-idx="${stickerIdx}"]`);
+    if (card) {
+      const lotInp = card.querySelector('[data-field="lot"]');
+      const expInp = card.querySelector('[data-field="exp"]');
+      if (lotInp) s.lot = lotInp.value;
+      if (expInp) s.expiration = expInp.value;
+    }
+
+    lightboxIdx = stickerIdx;
     lightboxImg.src = hi;
+    const titleParts = [`스티커 #${stickerIdx + 1}`];
+    if (s.productName) titleParts.push(s.productName);
+    lightboxTitle.textContent = titleParts.join(' · ');
+    lightboxLotInput.value = s.lot || '';
+    lightboxExpInput.value = s.expiration || '';
     lightbox.classList.add('show');
+    setTimeout(() => lightboxLotInput.focus(), 50);
   }
 
   function closeLightbox() {
+    if (lightboxIdx !== null) {
+      const s = currentStickers[lightboxIdx];
+      if (s) {
+        s.lot = lightboxLotInput.value;
+        s.expiration = lightboxExpInput.value;
+        // Push edits back into the visible card so totals/copy buttons
+        // stay in sync without a full re-render.
+        const card = document.querySelector(`.sticker-card[data-idx="${lightboxIdx}"]`);
+        if (card) {
+          const lotInp = card.querySelector('[data-field="lot"]');
+          const expInp = card.querySelector('[data-field="exp"]');
+          if (lotInp) lotInp.value = s.lot;
+          if (expInp) expInp.value = s.expiration;
+        }
+      }
+    }
+    lightboxIdx = null;
     lightbox.classList.remove('show');
     lightboxImg.src = '';
   }
 
-  lightbox.addEventListener('click', closeLightbox);
+  // Only close when the dark backdrop itself is clicked — clicks on
+  // the image, panel, or any input stay inside the modal.
+  lightbox.addEventListener('click', (e) => {
+    if (e.target === lightbox) closeLightbox();
+  });
   lightboxClose.addEventListener('click', closeLightbox);
+
+  document.getElementById('lightboxLotCopy').addEventListener('click', () => {
+    const v = lightboxLotInput.value;
+    if (v) copyToClipboard(v); else showToast('복사할 값이 없습니다');
+  });
+  document.getElementById('lightboxExpCopy').addEventListener('click', () => {
+    const v = lightboxExpInput.value;
+    if (v) copyToClipboard(v); else showToast('복사할 값이 없습니다');
+  });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && lightbox.classList.contains('show')) closeLightbox();
   });
