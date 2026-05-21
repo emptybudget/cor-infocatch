@@ -668,6 +668,23 @@
     color: var(--text);
   }
 
+  .lightbox-chooser {
+    display: none;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    padding: 10px 0;
+    border-bottom: 1px dashed var(--border);
+    margin-bottom: 4px;
+  }
+  .lightbox-chooser.visible { display: flex; }
+  .lightbox-chooser .chooser-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+
   .lightbox-hint {
     margin: 6px 0 0;
     font-size: 12px;
@@ -893,6 +910,7 @@
     <div class="lightbox-no-image" id="lightboxNoImage">감지된 영역이 없습니다<br><span>아래 값을 직접 입력하세요</span></div>
     <div class="lightbox-panel">
       <h3 id="lightboxTitle">스티커</h3>
+      <div class="lightbox-chooser" id="lightboxChooser"></div>
       <div class="field-row">
         <span class="field-label">LOT</span>
         <input class="field-input" id="lightboxLot" />
@@ -1292,10 +1310,17 @@
           sortKey: 999, isPlaceholder: false
         });
       } else {
-        for (const s of found) {
-          s.cropBox = stickerBox;
-          detectedStickers.push(s);
+        // One detection box → one card. extractStickers can return
+        // multiple candidates if the crop accidentally spans two
+        // stickers (or finds the same LOT via two heuristics); pick
+        // the most complete one (has both LOT and 유효기간 → longer
+        // LOT) and drop the rest.
+        if (found.length > 1) {
+          console.log(`[per-sticker] box ${i + 1}: ${found.length} candidates, keeping best`);
         }
+        const best = pickBestSticker(found);
+        best.cropBox = stickerBox;
+        detectedStickers.push(best);
       }
     }
     await worker.terminate();
@@ -1304,6 +1329,23 @@
     applyTemplateAndRender();
     rawText.textContent = rawTexts.join('\n\n');
     rawTextToggle.style.display = 'block';
+  }
+
+  // Among multiple sticker candidates from one crop, prefer the most
+  // complete: LOT and 유효기간 both present > LOT only > neither; tie
+  // broken by longer LOT length.
+  function pickBestSticker(stickers) {
+    if (stickers.length <= 1) return stickers[0];
+    let best = stickers[0];
+    let bestScore = -1, bestLen = -1;
+    for (const s of stickers) {
+      const score = (s.lot ? 1 : 0) + (s.expiration ? 1 : 0);
+      const len = (s.lot || '').length;
+      if (score > bestScore || (score === bestScore && len > bestLen)) {
+        best = s; bestScore = score; bestLen = len;
+      }
+    }
+    return best;
   }
 
   // Legacy whole-image OCR — used as fallback when sticker detection
@@ -2352,6 +2394,7 @@
   const lightboxExpInput = document.getElementById('lightboxExp');
   const lightboxTitle = document.getElementById('lightboxTitle');
   const lightboxNoImage = document.getElementById('lightboxNoImage');
+  const lightboxChooserEl = document.getElementById('lightboxChooser');
 
   // Persist whatever's currently in the lightbox panel back into
   // currentStickers and the matching card. Used both on close and
@@ -2402,8 +2445,51 @@
     lightboxTitle.textContent = titleParts.join(' · ');
     lightboxLotInput.value = s.lot || '';
     lightboxExpInput.value = s.expiration || '';
+    updateLightboxChooser();
     lightbox.classList.add('show');
     setTimeout(() => lightboxLotInput.focus(), 50);
+  }
+
+  // Mirror of the in-card chooser. Shown only when the current sticker
+  // is unrecognized (categoryIdx < 0, not a template placeholder) AND
+  // some category is short of its expected count. Clicking a button
+  // assigns the category, re-renders, then re-opens the same sticker
+  // (its index may have changed after the resort).
+  function updateLightboxChooser() {
+    lightboxChooserEl.innerHTML = '';
+    lightboxChooserEl.classList.remove('visible');
+    if (lightboxIdx === null) return;
+    const s = currentStickers[lightboxIdx];
+    if (!s || s.isPlaceholder || s.categoryIdx >= 0) return;
+    const shortfall = computeShortfall(getTemplate());
+    if (shortfall.length === 0) return;
+
+    const label = document.createElement('span');
+    label.className = 'chooser-label';
+    label.textContent = '이게 무엇인가요?';
+    lightboxChooserEl.appendChild(label);
+
+    shortfall.forEach(catIdx => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-outline chooser-btn';
+      btn.textContent = CATEGORY_LABEL[catIdx];
+      btn.addEventListener('click', () => {
+        const sticker = currentStickers[lightboxIdx];
+        if (!sticker) return;
+        commitLightboxEdits();
+        sticker.categoryIdx = catIdx;
+        sticker.recognized = true;
+        sticker.productName = CATEGORY_LABEL[catIdx];
+        applyTemplateAndRender();
+        // Reopen the same sticker at its new index in the resorted list.
+        const newIdx = currentStickers.indexOf(sticker);
+        if (newIdx >= 0) openLightbox(newIdx);
+        else closeLightbox();
+      });
+      lightboxChooserEl.appendChild(btn);
+    });
+    lightboxChooserEl.classList.add('visible');
   }
 
   function closeLightbox() {
