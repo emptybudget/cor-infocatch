@@ -868,6 +868,14 @@
         <p class="hint">또는 <kbd>Ctrl</kbd> + <kbd>V</kbd> 로 클립보드 이미지 붙여넣기</p>
         <p class="hint">JPG, PNG 등의 사진 파일 지원</p>
         <input type="file" id="fileInput" accept="image/*" />
+        <!-- B4: 모바일 카메라 직접 촬영용 input.
+             capture="environment"는 모바일에서 후면 카메라를 바로 열어줌.
+             데스크탑에서는 일반 파일 선택 다이얼로그로 동작함. -->
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;" />
+      </div>
+      <!-- B4: 카메라 버튼 — dropzone 바로 아래에 독립 버튼으로 배치 -->
+      <div style="margin-top:8px; text-align:center;">
+        <button type="button" class="btn btn-outline btn-sm" id="cameraBtn">📷 카메라로 촬영</button>
       </div>
 
       <div class="preview-section" id="previewSection" style="margin-top:16px;">
@@ -984,6 +992,19 @@
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (file) handleFile(file);
+  });
+
+  // B4: 카메라 버튼 — 클릭 시 cameraInput을 프로그래밍적으로 열어줌.
+  // 모바일에서는 capture="environment" 덕분에 후면 카메라가 바로 열리고,
+  // 데스크탑에서는 일반 파일 선택 다이얼로그로 동작(기능 회귀 없음).
+  const cameraBtn = document.getElementById('cameraBtn');
+  const cameraInput = document.getElementById('cameraInput');
+  cameraBtn.addEventListener('click', () => cameraInput.click());
+  cameraInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) handleFile(file);
+    // 같은 파일을 다시 촬영해도 change 이벤트가 재발생하도록 초기화
+    cameraInput.value = '';
   });
 
   // Paste from clipboard (Ctrl+V / Cmd+V)
