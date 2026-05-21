@@ -990,6 +990,17 @@
     return results;
   }
 
+  // 현재 시각을 파일명용 날짜/시간 문자열로 반환.
+  // dateStr: 'YYYYMMDD', timeStr: 'HHmm' — CSV 파일명에 사용.
+  function formatNowForFilename() {
+    const now = new Date();
+    const dateStr = now.getFullYear().toString()
+      + pad(now.getMonth() + 1)  // getMonth()는 0부터 시작하므로 +1
+      + pad(now.getDate());
+    const timeStr = pad(now.getHours()) + pad(now.getMinutes());
+    return { dateStr, timeStr };
+  }
+
   // 텍스트에서 LOT 번호를 추출. normalizeLotToken으로 OCR 오인식도 보정.
   // "LOT:" 접두사 있는 형태와 LOT 패턴 직접 매칭 두 가지를 순서대로 시도.
   function extractLotFromText(text) {
@@ -2356,11 +2367,7 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         // 파일명: coralis-스티커-YYYYMMDD-HHmm.csv
-        const now = new Date();
-        const dateStr = now.getFullYear().toString()
-          + pad(now.getMonth() + 1)    // getMonth()는 0부터 시작하므로 +1
-          + pad(now.getDate());
-        const timeStr = pad(now.getHours()) + pad(now.getMinutes());
+        const { dateStr, timeStr } = formatNowForFilename();
         a.href = url;
         a.download = `coralis-스티커-${dateStr}-${timeStr}.csv`;
         document.body.appendChild(a);
