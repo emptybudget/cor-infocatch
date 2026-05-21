@@ -2742,14 +2742,13 @@
   lightboxLotInput.addEventListener('keydown', onLightboxInputKeydown);
   lightboxExpInput.addEventListener('keydown', onLightboxInputKeydown);
 
-  document.getElementById('lightboxLotCopy').addEventListener('click', () => {
-    const v = lightboxLotInput.value;
+  // 라이트박스 복사 버튼 공용 핸들러 — LOT / 유효기간 버튼 모두 이 함수 사용.
+  function onLightboxCopy(input) {
+    const v = input.value;
     if (v) copyToClipboard(v); else showToast('복사할 값이 없습니다');
-  });
-  document.getElementById('lightboxExpCopy').addEventListener('click', () => {
-    const v = lightboxExpInput.value;
-    if (v) copyToClipboard(v); else showToast('복사할 값이 없습니다');
-  });
+  }
+  document.getElementById('lightboxLotCopy').addEventListener('click', () => onLightboxCopy(lightboxLotInput));
+  document.getElementById('lightboxExpCopy').addEventListener('click', () => onLightboxCopy(lightboxExpInput));
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && lightbox.classList.contains('show')) closeLightbox();
   });
