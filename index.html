@@ -934,6 +934,34 @@
 
 <script>
 (function() {
+  // ===== 상수 정의 =====
+  // 전처리 시 이미지 긴 쪽을 이 픽셀까지 확대 — Tesseract 인식률 향상에 필요한 최소 해상도.
+  const TARGET_LONG_SIDE = 3000;
+  // 명암 대비 보정 강도 — 1.0이 원본, 값이 클수록 흑백 대비가 강해짐.
+  const CONTRAST_FACTOR = 1.4;
+  // 중간 밝기 기준값 — 대비 보정의 중심축 (0~255 범위).
+  const MID_BRIGHTNESS = 128;
+  // OpenCV 로드 타임아웃(밀리초) — CDN이 느릴 때 무한 대기 방지.
+  const OPENCV_TIMEOUT_MS = 45000;
+  // detectStickerBoxes: 윤곽선이 전체 이미지 면적 대비 이 비율 이상이어야 스티커 후보로 인정.
+  // 너무 작으면 노이즈(글씨 조각 등)가 스티커로 오인됨.
+  const MIN_AREA_RATIO = 0.003;
+  // detectStickerBoxes: 이 비율 초과하는 윤곽선은 배경으로 간주해 제외.
+  const MAX_AREA_RATIO = 0.4;
+  // detectStickerBoxes: 가로/세로 비율이 이 범위를 벗어나면 스티커가 아닌 것으로 판단.
+  const MIN_BOX_AR = 0.3;  // 이보다 좁으면 (세로 막대 형태) 제외
+  const MAX_BOX_AR = 5;    // 이보다 넓으면 (가로 막대 형태) 제외
+  // 박스 이동/리사이즈 시 최솟값 — 박스가 너무 작아지면 클릭 불가능해지므로 제한.
+  const BOX_MIN_PX = 20;
+  // ROI 드래그 최소 크기 — 이보다 작은 드래그는 실수로 판단해 무시.
+  const ROI_MIN_PX = 15;
+  // runPerStickerOCR: 스티커 박스 주변 패딩(픽셀) — 경계 글자가 잘리지 않도록 여유를 줌.
+  const STICKER_CROP_PAD = 8;
+  // 라이트박스 하이레스 크롭 타깃 픽셀 — 긴 쪽을 이 크기로 스케일해서 선명하게 표시.
+  const HIRESCROP_TARGET_PX = 1600;
+  // 썸네일 캔버스 렌더 크기(픽셀) — CSS 표시 크기(220px)보다 크게 렌더해 HiDPI 대응.
+  const THUMB_RENDER_SIZE = 480;
+
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('fileInput');
   const previewSection = document.getElementById('previewSection');
@@ -1216,8 +1244,8 @@
       const onMove = (ev) => {
         const dx = (ev.clientX - startX) * sx;
         const dy = (ev.clientY - startY) * sy;
-        last.w = Math.max(20, Math.min(W - box.x, orig.w + dx));
-        last.h = Math.max(20, Math.min(H - box.y, orig.h + dy));
+        last.w = Math.max(BOX_MIN_PX, Math.min(W - box.x, orig.w + dx));
+        last.h = Math.max(BOX_MIN_PX, Math.min(H - box.y, orig.h + dy));
         boxDiv.style.width = (last.w / W * 100) + '%';
         boxDiv.style.height = (last.h / H * 100) + '%';
       };
@@ -1294,11 +1322,10 @@
       progressFill.style.width = (10 + (i / boxes.length) * 85) + '%';
       loadingText.textContent = `OCR 진행: ${i + 1}/${boxes.length}`;
       const box = boxes[i];
-      const pad = 8;
-      const x0 = Math.max(0, box.x - pad);
-      const y0 = Math.max(0, box.y - pad);
-      const x1 = Math.min(ocrCanvas.width, box.x + box.w + pad);
-      const y1 = Math.min(ocrCanvas.height, box.y + box.h + pad);
+      const x0 = Math.max(0, box.x - STICKER_CROP_PAD);
+      const y0 = Math.max(0, box.y - STICKER_CROP_PAD);
+      const x1 = Math.min(ocrCanvas.width, box.x + box.w + STICKER_CROP_PAD);
+      const y1 = Math.min(ocrCanvas.height, box.y + box.h + STICKER_CROP_PAD);
       const cw = x1 - x0, ch = y1 - y0;
       const c = document.createElement('canvas');
       c.width = cw; c.height = ch;
@@ -1404,7 +1431,7 @@
       script.async = true;
       const timeout = setTimeout(() => {
         reject(new Error('OpenCV 로드 타임아웃 (45s)'));
-      }, 45000);
+      }, OPENCV_TIMEOUT_MS);
       script.onload = () => {
         console.log('[opencv] script tag loaded');
         if (typeof cv === 'undefined') {
@@ -1466,8 +1493,8 @@
     console.log('[detect] kernel=' + ks + ', raw contours:', contours.size());
 
     const imgArea = canvas.width * canvas.height;
-    const minArea = imgArea * 0.003;
-    const maxArea = imgArea * 0.4;
+    const minArea = imgArea * MIN_AREA_RATIO;
+    const maxArea = imgArea * MAX_AREA_RATIO;
     const boxes = [];
     let rejected = { area: 0, ar: 0 };
     for (let i = 0; i < contours.size(); i++) {
@@ -1478,7 +1505,7 @@
       } else {
         const r = cv.boundingRect(c);
         const ar = r.width / r.height;
-        if (ar < 0.3 || ar > 5) {
+        if (ar < MIN_BOX_AR || ar > MAX_BOX_AR) {
           rejected.ar++;
         } else {
           boxes.push({ x: r.x, y: r.y, w: r.width, h: r.height });
@@ -1505,7 +1532,6 @@
   // accurate on large, high-contrast text.
   async function preprocessImage(file) {
     const img = await loadImage(file);
-    const TARGET_LONG_SIDE = 3000;
     const longSide = Math.max(img.naturalWidth, img.naturalHeight);
     const scale = longSide < TARGET_LONG_SIDE ? TARGET_LONG_SIDE / longSide : 1;
     const w = Math.round(img.naturalWidth * scale);
@@ -1521,11 +1547,9 @@
     // Grayscale + linear contrast stretch
     const imageData = ctx.getImageData(0, 0, w, h);
     const d = imageData.data;
-    const CONTRAST = 1.4;
-    const MID = 128;
     for (let i = 0; i < d.length; i += 4) {
       const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      const c = Math.max(0, Math.min(255, (g - MID) * CONTRAST + MID));
+      const c = Math.max(0, Math.min(255, (g - MID_BRIGHTNESS) * CONTRAST_FACTOR + MID_BRIGHTNESS));
       d[i] = d[i + 1] = d[i + 2] = c;
     }
     ctx.putImageData(imageData, 0, 0);
@@ -2361,15 +2385,14 @@
     if (sy + sh > H) sy = H - sh;
 
     const out = document.createElement('canvas');
-    const SIZE = 480; // hi-DPI render; CSS slot is 220px
-    out.width = SIZE;
-    out.height = SIZE;
+    out.width = THUMB_RENDER_SIZE;
+    out.height = THUMB_RENDER_SIZE;
     const ctx = out.getContext('2d');
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, SIZE, SIZE);
-    ctx.drawImage(ocrCanvas, sx, sy, sw, sh, 0, 0, SIZE, SIZE);
+    ctx.fillRect(0, 0, THUMB_RENDER_SIZE, THUMB_RENDER_SIZE);
+    ctx.drawImage(ocrCanvas, sx, sy, sw, sh, 0, 0, THUMB_RENDER_SIZE, THUMB_RENDER_SIZE);
     try {
       return out.toDataURL('image/jpeg', 0.9);
     } catch (e) {
@@ -2436,7 +2459,7 @@
     const left = Math.min(x, roiStart.x), top = Math.min(y, roiStart.y);
     const w = Math.abs(x - roiStart.x), h = Math.abs(y - roiStart.y);
     roiStart = null;
-    if (w < 15 || h < 15) {
+    if (w < ROI_MIN_PX || h < ROI_MIN_PX) {
       if (roiRectEl) { roiRectEl.remove(); roiRectEl = null; }
       if (roiAddMode) return; // ignore tiny drags, stay in add mode
       exitROI();
@@ -2711,9 +2734,7 @@
     let sw = sx1 - sx;
     let sh = sy1 - sy;
 
-    // Target ~1600px on the long side
-    const TARGET = 1600;
-    const scale = Math.min(TARGET / Math.max(sw, sh), 2.5);
+    const scale = Math.min(HIRESCROP_TARGET_PX / Math.max(sw, sh), 2.5);
     const ow = Math.round(sw * scale);
     const oh = Math.round(sh * scale);
 
