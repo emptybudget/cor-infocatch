@@ -258,6 +258,14 @@
     color: var(--muted);
   }
 
+  /* B1: CSV/복사 버튼 그룹 — results-header 우측에 나란히 배치 */
+  .export-btns {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
   .sticker-card {
     background: var(--card);
     border-radius: 12px;
@@ -2100,7 +2108,11 @@
     const header = `
       <div class="results-header">
         <h2>추출 결과</h2>
-        <span class="results-count">${stickers.length}개 스티커</span>
+        <div class="export-btns">
+          <span class="results-count">${stickers.length}개 스티커</span>
+          <button class="btn btn-outline btn-sm" id="copyTsvBtn">📋 전체 복사</button>
+          <button class="btn btn-outline btn-sm" id="downloadCsvBtn">💾 CSV 다운로드</button>
+        </div>
       </div>
       ${pipelineStatus ? `<div class="pipeline-status">${escapeHtml(pipelineStatus)}</div>` : ''}`;
 
@@ -2207,6 +2219,72 @@
         applyTemplateAndRender();
       });
     });
+
+    // B1: "전체 복사" 버튼 — TSV 형식(탭 구분)으로 클립보드에 복사.
+    // 엑셀에서 붙여넣기하면 열이 자동으로 분리됨.
+    const copyTsvBtn = document.getElementById('copyTsvBtn');
+    if (copyTsvBtn) {
+      copyTsvBtn.addEventListener('click', () => {
+        // 헤더 행 + 각 스티커 행을 탭으로 구분하여 조립
+        const tsv = buildExportRows(currentStickers, '\t');
+        copyToClipboard(tsv);
+        // 복사 성공 메시지는 copyToClipboard 내부에서 표시됨
+      });
+    }
+
+    // B1: "CSV 다운로드" 버튼 — UTF-8 BOM 포함 CSV 파일로 저장.
+    // BOM(﻿)이 있으면 엑셀에서 열 때 한글이 깨지지 않음.
+    const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+    if (downloadCsvBtn) {
+      downloadCsvBtn.addEventListener('click', () => {
+        const csv = buildExportRows(currentStickers, ',');
+        // UTF-8 BOM 포함 — 엑셀 한글 깨짐 방지
+        const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        // 파일명: coralis-스티커-YYYYMMDD-HHmm.csv
+        const now = new Date();
+        const dateStr = now.getFullYear().toString()
+          + pad(now.getMonth() + 1)    // getMonth()는 0부터 시작하므로 +1
+          + pad(now.getDate());
+        const timeStr = pad(now.getHours()) + pad(now.getMinutes());
+        a.href = url;
+        a.download = `coralis-스티커-${dateStr}-${timeStr}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('CSV 파일을 저장했습니다');
+      });
+    }
+  }
+
+  // B1: 내보내기용 행 문자열 조립
+  // sep='\t' 이면 TSV(엑셀 붙여넣기용), sep=',' 이면 CSV 파일용.
+  // 각 카드의 현재 입력값(사용자가 수정했을 수 있음)을 DOM에서 읽어 사용.
+  function buildExportRows(stickers, sep) {
+    // 헤더 행
+    const rows = ['카테고리' + sep + 'LOT' + sep + '유효기간'];
+    stickers.forEach((s, i) => {
+      // 사용자가 카드에서 직접 수정했을 수도 있으므로 DOM 입력값을 우선 사용
+      const card = document.querySelector(`.sticker-card[data-idx="${i}"]`);
+      let lot = s.lot || '';
+      let exp = s.expiration || '';
+      if (card) {
+        const lotInp = card.querySelector('[data-field="lot"]');
+        const expInp = card.querySelector('[data-field="exp"]');
+        if (lotInp) lot = lotInp.value;
+        if (expInp) exp = expInp.value;
+      }
+      // 카테고리 이름: 미분류이면 빈칸, placeholder이면 카테고리명만
+      const catName = s.categoryIdx >= 0
+        ? (CATEGORY_LABEL[s.categoryIdx] || '')
+        : '';
+      // CSV에서 쉼표가 포함된 셀은 따옴표로 감싸야 함
+      const quote = (v) => sep === ',' && v.includes(',') ? `"${v}"` : v;
+      rows.push(quote(catName) + sep + quote(lot) + sep + quote(exp));
+    });
+    return rows.join('\r\n');  // Windows 엑셀 호환을 위해 CRLF 사용
   }
 
   // Crop a region around the LOT (+ date) bbox from the OCR canvas
