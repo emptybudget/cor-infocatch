@@ -1108,6 +1108,10 @@
   let pendingBoxes = [];
   let inReviewMode = false;
   let roiAddMode = false;
+  // B3: OCR 완료 직후 한 번만 미인식 카드 자동 오픈에 사용하는 일회용 플래그.
+  // true일 때만 applyTemplateAndRender 내부에서 첫 ⚠ 카드를 자동으로 열고,
+  // 열고 나면 즉시 false로 되돌려 이후 재렌더에서는 반응하지 않음.
+  let autoOpenNextUnknown = false;
 
   function enterReviewMode(boxes) {
     pendingBoxes = boxes.map(b => ({ ...b }));
@@ -1334,6 +1338,8 @@
     await worker.terminate();
     progressFill.style.width = '100%';
 
+    // B3: OCR 완료 직후 — 미인식 카드 자동 포커스 플래그 활성화 (일회용)
+    autoOpenNextUnknown = true;
     applyTemplateAndRender();
     rawText.textContent = rawTexts.join('\n\n');
     rawTextToggle.style.display = 'block';
@@ -1382,6 +1388,8 @@
     await worker.terminate();
 
     detectedStickers = extractStickers([r1.data, r2.data]);
+    // B3: OCR 완료 직후 — 미인식 카드 자동 포커스 플래그 활성화 (일회용)
+    autoOpenNextUnknown = true;
     applyTemplateAndRender();
     rawText.textContent = '[PSM 11]\n' + r1.data.text + '\n\n[PSM 6]\n' + r2.data.text;
     rawTextToggle.style.display = 'block';
@@ -1881,6 +1889,24 @@
   function applyTemplateAndRender() {
     renderResults(applyTemplate(detectedStickers, getTemplate()));
     updateDetectedBoxes();
+
+    // B3: OCR 완료 직후 한 번만 — 첫 번째 미인식(⚠) 카드로 자동 스크롤 + 라이트박스 오픈.
+    // autoOpenNextUnknown이 true인 경우에만 동작하고, 즉시 false로 초기화해서
+    // 이후 chooser 클릭 등으로 인한 재렌더에서는 반응하지 않음(귀찮음 방지).
+    if (autoOpenNextUnknown) {
+      autoOpenNextUnknown = false; // 일회용 플래그 소비
+      // 미인식 카드: categoryIdx < 0이고 placeholder가 아닌 첫 번째 카드
+      const firstUnknownIdx = currentStickers.findIndex(
+        s => !s.isPlaceholder && s.categoryIdx < 0
+      );
+      if (firstUnknownIdx >= 0) {
+        // 해당 카드로 스크롤한 뒤 라이트박스를 열어 사용자가 바로 확인할 수 있게 함
+        const card = document.querySelector(`.sticker-card[data-idx="${firstUnknownIdx}"]`);
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // 스크롤 애니메이션 후 라이트박스 오픈 (50ms 지연으로 렌더 완료 대기)
+        setTimeout(() => openLightbox(firstUnknownIdx), 50);
+      }
+    }
   }
 
   // Outline detected sticker regions on the preview.
